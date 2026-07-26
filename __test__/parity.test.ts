@@ -73,6 +73,12 @@ describe("search parity with minisearch", () => {
     expectSameResults(js.search("zen art", opts), rust.search("zen art", opts));
   });
 
+  test("a zero boost falls back to 1, like the original", () => {
+    const { js, rust } = buildBoth();
+    const opts = { boost: { title: 0 } };
+    expectSameResults(js.search("zen art", opts), rust.search("zen art", opts));
+  });
+
   test("prefix search", () => {
     const { js, rust } = buildBoth();
     const opts = { prefix: true };

@@ -34,9 +34,12 @@ const results = JSON.parse(miniSearch.searchJson("zen art motorcycle"));
 - `wildcardSearch(options)` replaces the `MiniSearch.wildcard` symbol query.
 - `vacuum()` is synchronous and complete; native code has no main thread to block.
 - Function-valued options (`tokenize`, `processTerm`, `extractField`, `filter`,
-  `boostDocument`, `boostTerm`, function forms of `prefix`/`fuzzy`) are not
-  supported by the native engine. The default tokenizer, term processor, and
-  field extractor are implemented in Rust.
+  `boostDocument`, `boostTerm`, `logger`, function forms of `prefix`/`fuzzy`)
+  are not supported by the native engine. The default tokenizer, term
+  processor, and field extractor are implemented in Rust; index-corruption
+  warnings go to stderr.
+- A wildcard node inside a `queries` combination is not supported; use
+  `wildcardSearch` at the top level.
 - `addAllAsync` and `loadJSONAsync` are unnecessary: the synchronous native
   calls do not block the JavaScript thread the way pure-JS indexing does.
 

@@ -386,15 +386,19 @@ impl Engine {
         let auto_vacuum = match object.get("autoVacuum") {
             None | Some(Value::Null) | Some(Value::Bool(true)) => Some(DEFAULT_AUTO_VACUUM),
             Some(Value::Bool(false)) => None,
+            // Falsy thresholds (0) fall back to the defaults, matching the
+            // original's `minDirtCount || defaultAutoVacuumOptions.minDirtCount`.
             Some(Value::Object(settings)) => Some(AutoVacuum {
                 min_dirt_count: settings
                     .get("minDirtCount")
                     .and_then(as_f64)
-                    .map(|v| v as u32)
+                    .map(|value| value as u32)
+                    .filter(|&value| value != 0)
                     .unwrap_or(DEFAULT_AUTO_VACUUM.min_dirt_count),
                 min_dirt_factor: settings
                     .get("minDirtFactor")
                     .and_then(as_f64)
+                    .filter(|&value| value != 0.0)
                     .unwrap_or(DEFAULT_AUTO_VACUUM.min_dirt_factor),
             }),
             Some(_) => Some(DEFAULT_AUTO_VACUUM),
@@ -1085,13 +1089,13 @@ impl Engine {
         interner: &mut Interner,
     ) -> RawResult {
         let search_fields = options.fields.as_ref().unwrap_or(&self.fields);
+        // A falsy boost (0) falls back to 1, matching the original's
+        // `getOwnProperty(options.boost, field) || 1`.
         let boosts: Vec<(String, f64)> = search_fields
             .iter()
             .map(|field| {
-                (
-                    field.clone(),
-                    options.boost.get(field).copied().unwrap_or(1.0),
-                )
+                let boost = options.boost.get(field).copied().unwrap_or(0.0);
+                (field.clone(), if boost == 0.0 { 1.0 } else { boost })
             })
             .collect();
 
