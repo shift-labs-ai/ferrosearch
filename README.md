@@ -40,6 +40,9 @@ const results = JSON.parse(miniSearch.searchJson("zen art motorcycle"));
   warnings go to stderr.
 - A wildcard node inside a `queries` combination is not supported; use
   `wildcardSearch` at the top level.
+- A partial `bm25` object replaces the whole parameter set, exactly like the
+  original; the resulting NaN scores surface as `null` (as they would through
+  `JSON.stringify`), because JSON has no NaN.
 - `addAllAsync` and `loadJSONAsync` are unnecessary: the synchronous native
   calls do not block the JavaScript thread the way pure-JS indexing does.
 

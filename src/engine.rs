@@ -163,15 +163,15 @@ impl SearchOptions {
             options.combine_with = parse_combine(combine)?;
         }
         if let Some(bm25) = object.get("bm25").and_then(Value::as_object) {
-            if let Some(k) = bm25.get("k").and_then(as_f64) {
-                options.bm25.k = k;
-            }
-            if let Some(b) = bm25.get("b").and_then(as_f64) {
-                options.bm25.b = b;
-            }
-            if let Some(d) = bm25.get("d").and_then(as_f64) {
-                options.bm25.d = d;
-            }
+            // A bm25 overlay replaces the whole parameter object, like the
+            // original's shallow spread. Missing keys become NaN, matching
+            // the undefined arithmetic of the original; NaN scores surface
+            // as null through JSON, like `JSON.stringify(NaN)`.
+            options.bm25 = Bm25 {
+                k: bm25.get("k").and_then(as_f64).unwrap_or(f64::NAN),
+                b: bm25.get("b").and_then(as_f64).unwrap_or(f64::NAN),
+                d: bm25.get("d").and_then(as_f64).unwrap_or(f64::NAN),
+            };
         }
         Ok(options)
     }
@@ -1355,6 +1355,12 @@ impl Engine {
     }
 
     pub fn load_json(json_text: &str, options: &Value) -> Result<Engine> {
+        if options.is_null() {
+            return Err(
+                "MiniSearch: loadJSON should be given the same options used when serializing the index"
+                    .to_string(),
+            );
+        }
         let data: Value = serde_json::from_str(json_text)
             .map_err(|error| format!("MiniSearch: invalid JSON index: {error}"))?;
         Self::load_js(&data, options)
