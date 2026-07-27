@@ -6,8 +6,8 @@ a native addon.
 ferrosearch provides exact, prefix, and fuzzy matching with BM25+ ranking,
 query combination trees, auto-suggestions, and a full document lifecycle. It
 is index- and API-compatible with MiniSearch 7: serialized indexes load in
-either library, and a test suite of 12,000+ assertions verifies that search
-results, scores, result ordering, and error messages are identical.
+either library. A test suite of 12,000+ assertions verifies identical search
+results, scores, result ordering, and error messages.
 
 - [API reference](docs/API.md)
 - [Design document](docs/DESIGN.md)
@@ -18,7 +18,7 @@ results, scores, result ordering, and error messages are identical.
   trees (`AND` / `OR` / `AND_NOT`).
 - Auto-suggestion engine for query auto-completion.
 - BM25+ result ranking.
-- Documents can be added, removed, discarded, and replaced at any time.
+- Add, remove, discard, and replace documents at any time.
 - Index serialization, interchangeable with MiniSearch in both directions.
 - JSON fast paths that keep bulk data out of the binding layer.
 - Result caching for repeated queries, invalidated on mutation.
@@ -30,10 +30,10 @@ results, scores, result ordering, and error messages are identical.
 bun add @shift-labs/ferrosearch
 ```
 
-Prebuilt binaries are published for macOS (arm64, x64) and Linux (x64 and
-arm64, glibc and musl). The matching binary is selected automatically at
-install time. On other platforms, build from source with Rust installed:
-`bun install && bun run build`.
+Prebuilt binaries cover macOS (arm64, x64) and Linux (x64 and arm64, glibc
+and musl). Installation selects the matching binary automatically. On other
+platforms, build from source with Rust installed: `bun install && bun run
+build`.
 
 ```javascript
 import { FerroSearch } from "@shift-labs/ferrosearch";
@@ -90,7 +90,7 @@ index.search("ismael", { fuzzy: 0.2 });
 // Combine terms with AND instead of the default OR
 index.search("zen art", { combineWith: "AND" });
 
-// Default search options can be set upon initialization
+// Set default search options upon initialization
 const tuned = new FerroSearch({
   fields: ["title", "text"],
   searchOptions: { boost: { title: 2 }, fuzzy: 0.2 },
@@ -99,7 +99,7 @@ const tuned = new FerroSearch({
 
 ### Query combination trees
 
-Subqueries can be combined with different operators and options:
+Combine subqueries with different operators and options:
 
 ```javascript
 // Documents that contain "zen" and ("motorcycle" or "archery")
@@ -134,8 +134,8 @@ index.autoSuggest("neromancer", { fuzzy: 0.2 });
 // => [ { suggestion: 'neuromancer', terms: [ 'neuromancer' ], score: 1.03998 } ]
 ```
 
-Suggestions are ranked by the relevance of the documents that the suggested
-search would return.
+ferrosearch ranks suggestions by the relevance of the documents that the
+suggested search would return.
 
 ### Removing, discarding, and replacing documents
 
@@ -166,7 +166,7 @@ const restored = FerroSearch.loadJson(serialized, {
 });
 ```
 
-`loadJson` must be given the same options used when the index was serialized.
+`loadJson` requires the same options that produced the serialized index.
 The serialization format is MiniSearch's version-2 format; indexes transfer
 between the two libraries in both directions.
 
@@ -189,12 +189,12 @@ boundary requires in any case.
 
 ### Result cache
 
-Search results are memoized per `(query, options)` and invalidated on any
-mutation, so repeated queries — autocomplete keystrokes, dashboard refreshes
-— skip the engine. The cache is only consulted when no discarded documents
-are pending vacuum, where search is a pure function of the index, so cached
-results are observably identical to recomputed ones. Disable it with
-`new FerroSearch({ ..., cache: false })`.
+ferrosearch memoizes search results per `(query, options)` and invalidates
+the cache on any mutation. Repeated queries — autocomplete keystrokes,
+dashboard refreshes — skip the engine. The cache only serves reads while no
+discards await vacuuming. In that state search is a pure function of the
+index, so cached results are observably identical to recomputed ones.
+Disable the cache with `new FerroSearch({ ..., cache: false })`.
 
 ## MiniSearch compatibility
 
@@ -204,12 +204,13 @@ ordering (including ties), match data, serialized indexes, and error
 messages. The test suite verifies this equivalence against the minisearch
 package directly.
 
-Function-valued options cannot cross the native boundary and are not
-supported: `tokenize`, `processTerm`, `extractField`, `stringifyField`,
-`filter`, `boostDocument`, `boostTerm`, `logger`, and the function forms of
-`prefix` and `fuzzy`. The defaults are implemented natively: tokenization
-splits on Unicode space and punctuation, terms are lowercased, and fields are
-read as plain object keys with JavaScript string coercion.
+ferrosearch does not support function-valued options, because functions
+cannot cross the native boundary. This applies to `tokenize`, `processTerm`,
+`extractField`, `stringifyField`, `filter`, `boostDocument`, `boostTerm`,
+`logger`, and the function forms of `prefix` and `fuzzy`. The defaults run
+natively. Tokenization splits on Unicode space and punctuation, the engine
+lowercases terms, and field extraction reads plain object keys with
+JavaScript string coercion.
 
 Equivalent alternatives:
 
@@ -227,14 +228,14 @@ Additional differences:
   block. `addAllAsync` and `loadJSONAsync` are therefore not provided.
 - Index-corruption warnings (removing a changed document) go to stderr.
 - A partial `bm25` object replaces the whole parameter set, as in the
-  original; the resulting NaN scores surface as `null` (as they would through
-  `JSON.stringify`), because JSON has no NaN.
+  original. The resulting NaN scores surface as `null` — the value
+  `JSON.stringify` produces — because JSON has no NaN.
 
 ## Performance
 
-The committed benchmarks run against minisearch 7.2.0 on the Billboard corpus
-(5,086 documents, two indexed fields), measured on Bun 1.3, Apple Silicon,
-with warmup. Reproduce with `bun run bench:compare` and
+The committed benchmarks run against minisearch 7.2.0 on the Billboard
+corpus (5,086 documents, two indexed fields). Measurements use Bun 1.3 on
+Apple Silicon, with warmup. Reproduce with `bun run bench:compare` and
 `bun run bench:memory`.
 
 | Benchmark | Relative to minisearch |
@@ -249,26 +250,27 @@ with warmup. Reproduce with `bun run bench:compare` and
 | Exact / prefix / fuzzy search (cold, mixed incl. broad queries) | 0.3–0.5x |
 
 Memory: approximately 6.8 MB RSS per index versus approximately 22 MB for
-the JavaScript implementation on the same corpus — about 3x smaller, through
-flat-vector posting lists, interned stored-field names, and enum-keyed
-document IDs.
+the JavaScript implementation on the same corpus — about 3x smaller. The
+savings come from flat-vector posting lists, interned stored-field names,
+and enum-keyed document IDs.
 
 Result transfer bounds bulk search performance: every result array crosses
-the native boundary as JSON, and parsing a thousand-result payload costs more
-than a warm JIT search in the JavaScript implementation. Bulk queries
-returning large result sets therefore favor the JavaScript implementation,
-while indexing, serialization, loading, auto-suggestion, selective queries,
-and cold start favor ferrosearch.
+the native boundary as JSON. Parsing a thousand-result payload costs more
+than a warm JIT search in the JavaScript implementation. Bulk queries with
+large result sets therefore favor the JavaScript implementation. Indexing,
+serialization, loading, auto-suggestion, selective queries, and cold start
+favor ferrosearch.
 
 ## Implementation guarantees
 
 - Insertion-ordered structures replicate JavaScript `Map` iteration order
   throughout, so tie ordering and match-data ordering are identical to
   MiniSearch's.
-- Edit distances are measured in Unicode scalar values rather than UTF-16
-  code units; behavior differs only for astral-plane characters.
-- The incremental index cleanup that MiniSearch performs during search after
-  `discard` is replicated, including its order-dependent scoring bookkeeping.
+- ferrosearch measures edit distances in Unicode scalar values rather than
+  UTF-16 code units; behavior differs only for astral-plane characters.
+- ferrosearch replicates the incremental index cleanup that MiniSearch
+  performs during search after `discard`, including its order-dependent
+  scoring bookkeeping.
 - The test suite (63 tests, 12,000+ assertions) compares every feature
   against the minisearch package: search batteries across corpora (unicode,
   mixed-type fields, edge-case IDs), full index-state equality after every

@@ -52,9 +52,9 @@ the constructor defaults.
 
 | Method | Description |
 | --- | --- |
-| `remove(document)` | Immediately removes a document. The document must be unchanged since indexing; mismatches warn on stderr. |
+| `remove(document)` | Immediately removes a document. Do not change the document between indexing and removal; mismatches warn on stderr. |
 | `removeAll(documents?)` | Removes the given documents, or resets the whole index when called without arguments. |
-| `discard(id)` | Hides a document by ID; the index is cleaned lazily by searches and vacuuming. |
+| `discard(id)` | Hides a document by ID; searches and vacuuming clean the index lazily. |
 | `discardAll(ids)` | Discards many IDs with at most one auto-vacuum at the end. |
 | `replace(document)` | `discard` + `add` under the same ID. |
 | `vacuum()` | Synchronously removes all references to discarded documents. |
@@ -75,7 +75,7 @@ Each result carries `id`, `score`, `terms` (matched document terms),
 
 | Member | Description |
 | --- | --- |
-| `has(id)` | Whether a document with this ID is indexed and searchable. |
+| `has(id)` | Whether the index contains a searchable document with this ID. |
 | `getStoredFields(id)` | Stored fields for the ID, or `null`. |
 | `documentCount` | Number of searchable documents. |
 | `termCount` | Number of terms in the index. |
