@@ -21,9 +21,9 @@ and the indexed data fits in process memory. Being a native addon, it targets
 server-side Bun and Node processes rather than browsers.
 
 Choose ferrosearch over the JS original when your workload leans on its strong
-sides: indexing from JSON payloads, serializing and loading indexes,
-auto-suggestions, and selective queries. See [Performance](#performance) for
-the honest numbers, including where the JS original is faster.
+sides: indexing from JSON payloads, serializing and loading indexes, and
+auto-suggestions. See [Performance](#performance) for the honest numbers,
+including where the JS original is faster.
 
 ## Features
 
@@ -226,19 +226,20 @@ Bun 1.3, Apple Silicon, with warmup:
 
 | Benchmark | Speedup vs JS |
 | --- | --- |
-| Serialize index (`toJsonString`) | 4.7x |
-| Load serialized index | 2.1x |
-| Auto suggestion | 1.6x |
-| Indexing from a JSON string (`addAllJson`) | 1.2x |
-| Queries with few or no results | 1.8–4x |
+| Serialize index (`toJsonString`) | 4.5x |
+| Load serialized index | 2.0x |
+| Auto suggestion | 1.5x |
+| Indexing from a JSON string (`addAllJson`) | 1.1–1.2x |
+| Selective queries (few results) | 1.0x |
 | Indexing from JavaScript objects | 0.9x |
 | Exact / prefix / fuzzy search (mixed, incl. broad queries) | 0.3–0.5x |
 
 Honest summary: once the JavaScript JIT is warm, the original wins most bulk
 search scenarios, because every ferrosearch result still crosses the native
-boundary as JSON. ferrosearch wins on cold start, selective queries,
-auto-suggest, and index loading. Reducing result-transfer cost is the main
-open optimization — within the constraint that results stay exactly
+boundary as JSON; selective queries are at parity. ferrosearch wins on
+serialization, index loading, auto-suggest, JSON-string indexing, and cold
+start (native code needs no JIT warmup). Reducing result-transfer cost is the
+main open optimization — within the constraint that results stay exactly
 MiniSearch-shaped.
 
 ## Faithfulness

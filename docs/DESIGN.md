@@ -14,7 +14,7 @@ below focus on what a Rust port adds or changes.
    index. Fidelity outranks speed: an optimization that changes observable
    behavior is rejected.
 2. **Native performance where the boundary allows it** — indexing from JSON,
-   serialization, index loading, auto-suggest, selective queries.
+   serialization, index loading, auto-suggest.
 3. **Small API surface**, mirroring the original class plus a few additive
    JSON fast paths.
 
@@ -150,9 +150,9 @@ through the same chain — including the original's behavior of constructor
 The main performance lesson of this port: **crossing the boundary dominates
 everything else.** Strategy:
 
-- Bulk data crosses as JSON strings. Native `serde_json` parsing/writing plus
-  the engine's `JSON.parse` on the JS side beats per-object binding
-  conversion by 2–5x.
+- Bulk data crosses as JSON strings. Native `serde_json` parsing/writing
+  beats per-object binding conversion — ~4.5x for serialization, ~1.2x for
+  bulk indexing.
 - Bulk search cannot be won this way: a warm JIT builds thousands of
   monomorphic result objects faster than any serialize-transfer-parse cycle.
   Fidelity forbids paging or lazy results, so this loss is accepted and

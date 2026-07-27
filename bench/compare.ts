@@ -78,6 +78,19 @@ function searchSuite(name: string, searchOptions?: Record<string, unknown>) {
 }
 
 searchSuite("exact search");
+
+// Selective queries returning few or no results: the case where the native
+// engine wins, because result transfer is negligible.
+const rareQueries = ["xylophone", "virgin", "zzyzx"];
+compare(
+  "selective queries (few results)",
+  () => {
+    for (const query of rareQueries) js.search(query);
+  },
+  () => {
+    for (const query of rareQueries) JSON.parse(rust.searchJson(query));
+  },
+);
 searchSuite("prefix search", { prefix: true });
 searchSuite("fuzzy search (0.2)", { fuzzy: 0.2 });
 searchSuite("combined search (prefix + fuzzy)", { prefix: true, fuzzy: 0.2 });
