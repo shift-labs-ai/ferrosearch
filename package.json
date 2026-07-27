@@ -1,19 +1,59 @@
 {
-  "name": "ferrosearch",
+  "name": "@shift-labs/ferrosearch",
   "version": "0.1.0",
   "description": "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible",
   "license": "MIT",
   "repository": "github:shift-labs-ai/ferrosearch",
   "main": "ferrosearch.js",
   "types": "ferrosearch.d.ts",
+  "files": [
+    "ferrosearch.js",
+    "ferrosearch.d.ts",
+    "index.js",
+    "index.d.ts",
+    "docs"
+  ],
+  "keywords": [
+    "search",
+    "full-text",
+    "fuzzy",
+    "bm25",
+    "native",
+    "rust",
+    "minisearch"
+  ],
   "napi": {
-    "name": "ferrosearch"
+    "name": "ferrosearch",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl"
+      ]
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "optionalDependencies": {
+    "@shift-labs/ferrosearch-darwin-arm64": "0.1.0",
+    "@shift-labs/ferrosearch-darwin-x64": "0.1.0",
+    "@shift-labs/ferrosearch-linux-x64-gnu": "0.1.0",
+    "@shift-labs/ferrosearch-linux-arm64-gnu": "0.1.0",
+    "@shift-labs/ferrosearch-linux-x64-musl": "0.1.0",
+    "@shift-labs/ferrosearch-linux-arm64-musl": "0.1.0"
   },
   "scripts": {
+    "artifacts": "napi artifacts",
     "bench:compare": "bun bench/compare.ts",
     "bench:memory": "bun bench/memory.ts",
     "build": "napi build --release --strip --platform",
     "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm --skip-gh-release",
     "test": "bun test",
     "test:rust": "cargo test",
     "verify": "cargo fmt --check && cargo clippy -- -D warnings && cargo test && napi build --release --strip --platform && bun test"

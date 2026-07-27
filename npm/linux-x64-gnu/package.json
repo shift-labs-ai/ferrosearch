@@ -1,0 +1,32 @@
+{
+  "name": "@shift-labs/ferrosearch-linux-x64-gnu",
+  "version": "0.1.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "ferrosearch.linux-x64-gnu.node",
+  "files": [
+    "ferrosearch.linux-x64-gnu.node"
+  ],
+  "description": "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible",
+  "keywords": [
+    "search",
+    "full-text",
+    "fuzzy",
+    "bm25",
+    "native",
+    "rust",
+    "minisearch"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": "github:shift-labs-ai/ferrosearch",
+  "libc": [
+    "glibc"
+  ]
+}
