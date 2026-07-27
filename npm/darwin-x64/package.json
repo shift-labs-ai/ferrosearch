@@ -1,0 +1,29 @@
+{
+  "name": "@shift-labs/ferrosearch-darwin-x64",
+  "version": "0.1.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "ferrosearch.darwin-x64.node",
+  "files": [
+    "ferrosearch.darwin-x64.node"
+  ],
+  "description": "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible",
+  "keywords": [
+    "search",
+    "full-text",
+    "fuzzy",
+    "bm25",
+    "native",
+    "rust",
+    "minisearch"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": "github:shift-labs-ai/ferrosearch"
+}

@@ -26,15 +26,16 @@ results, scores, result ordering, and error messages are identical.
 
 ## Installation
 
-The package builds from source and requires Rust and Bun (or Node):
-
 ```bash
-bun install
-bun run build
+bun add @shift-labs/ferrosearch
 ```
 
+Prebuilt binaries are published for macOS (arm64, x64) and Linux (x64). On
+other platforms, build from source with Rust installed: `bun install && bun
+run build`.
+
 ```javascript
-import { FerroSearch } from "ferrosearch";
+import { FerroSearch } from "@shift-labs/ferrosearch";
 ```
 
 For drop-in migration from MiniSearch, the same class is also exported under

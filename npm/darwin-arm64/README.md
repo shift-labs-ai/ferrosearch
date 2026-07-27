@@ -1,0 +1,3 @@
+# `@shift-labs/ferrosearch-darwin-arm64`
+
+This is the **aarch64-apple-darwin** binary for `@shift-labs/ferrosearch`
