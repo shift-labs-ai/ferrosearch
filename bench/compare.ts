@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import JsMiniSearch from "minisearch";
 // @ts-expect-error resolved after napi build
-import { MiniSearch } from "../ferrosearch.js";
+import { FerroSearch as MiniSearch } from "../ferrosearch.js";
 
 const corpus: Record<string, string>[] = JSON.parse(
   readFileSync(join(import.meta.dir, "billboard.json"), "utf8"),

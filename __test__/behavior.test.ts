@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import JsMiniSearch from "minisearch";
 // @ts-expect-error resolved after napi build
-import { MiniSearch } from "../ferrosearch.js";
+import { FerroSearch as MiniSearch, MiniSearch as CompatAlias } from "../ferrosearch.js";
 
 // -- Deep equivalence with float tolerance -----------------------------------
 
@@ -462,6 +462,12 @@ describe("wildcard equivalence", () => {
     js.discard(1);
     rust.discard(1);
     expectEquivalent(rust.wildcardSearch(), js.search(JsMiniSearch.wildcard));
+  });
+});
+
+describe("exports", () => {
+  test("MiniSearch is a drop-in alias of FerroSearch", () => {
+    expect(CompatAlias).toBe(MiniSearch);
   });
 });
 

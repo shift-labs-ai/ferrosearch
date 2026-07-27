@@ -1,16 +1,15 @@
 "use strict";
 
-// Package entry point: a thin wrapper over the native class that routes bulk
-// operations through the JSON fast paths (measurably faster than converting
-// object graphs through the bindings) and restores the `MiniSearch.wildcard`
-// symbol query of the original API. Documents and options must be
-// JSON-serializable, which the native boundary requires in any case.
+// Package entry point. Extends the native class with the JSON fast paths for
+// bulk operations and the wildcard symbol query. Documents, options, and
+// queries must be JSON-serializable, which the native boundary requires in
+// any case.
 
 const native = require("./index.js");
 
 const wildcard = Symbol("*");
 
-class MiniSearch extends native.MiniSearch {
+class FerroSearch extends native.FerroSearch {
   /** The special wildcard query matching all documents. */
   static wildcard = wildcard;
 
@@ -24,15 +23,19 @@ class MiniSearch extends native.MiniSearch {
   }
 
   static loadJson(json, options) {
-    const instance = native.MiniSearch.loadJson(json, options);
-    Object.setPrototypeOf(instance, MiniSearch.prototype);
+    const instance = native.FerroSearch.loadJson(json, options);
+    Object.setPrototypeOf(instance, FerroSearch.prototype);
     return instance;
   }
 
-  /** Alias matching the original's method name. */
+  /** Alias for `loadJson`, for MiniSearch drop-in compatibility. */
   static loadJSON(json, options) {
-    return MiniSearch.loadJson(json, options);
+    return FerroSearch.loadJson(json, options);
   }
 }
 
-module.exports = { MiniSearch };
+module.exports = {
+  FerroSearch,
+  /** MiniSearch drop-in alias. */
+  MiniSearch: FerroSearch,
+};

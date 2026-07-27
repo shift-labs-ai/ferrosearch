@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import JsMiniSearch from "minisearch";
 // @ts-expect-error resolved after napi build
-import { MiniSearch } from "../ferrosearch.js";
+import { FerroSearch as MiniSearch } from "../ferrosearch.js";
 
 type Doc = Record<string, unknown> & { id: number };
 

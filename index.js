@@ -310,6 +310,6 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { MiniSearch } = nativeBinding
+const { FerroSearch } = nativeBinding
 
-module.exports.MiniSearch = MiniSearch
+module.exports.FerroSearch = FerroSearch

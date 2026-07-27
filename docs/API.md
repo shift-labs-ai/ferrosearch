@@ -1,15 +1,15 @@
 # API reference
 
-ferrosearch exposes one class, `MiniSearch`, mirroring the [original API
-](https://lucaong.github.io/minisearch/classes/MiniSearch.MiniSearch.html)
-minus function-valued options (see [Differences from
-MiniSearch](../README.md#differences-from-minisearch)). All methods throw
-regular JavaScript errors with MiniSearch's error messages.
+ferrosearch exposes one class, `FerroSearch`, also exported under the alias
+`MiniSearch` for drop-in migration. The API is compatible with MiniSearch 7
+except for function-valued options (see [MiniSearch
+compatibility](../README.md#minisearch-compatibility)). Errors are thrown as
+regular JavaScript errors with messages identical to MiniSearch's.
 
 ## Constructor
 
 ```javascript
-new MiniSearch(options)
+new FerroSearch(options)
 ```
 
 | Option | Type | Default | Description |
@@ -20,10 +20,9 @@ new MiniSearch(options)
 | `searchOptions` | `SearchOptions` | — | Default search options (see below). |
 | `autoSuggestOptions` | `SearchOptions` | — | Default auto-suggest options. |
 | `autoVacuum` | `boolean \| { minDirtCount?, minDirtFactor? }` | `true` | Automatic vacuuming after discards. `true` uses thresholds 20 / 0.1; falsy thresholds fall back to the defaults. |
-| `cache` | `boolean` | `true` | Memoize search results per `(query, options)`, invalidated on any mutation and bypassed while discards are pending vacuum. Additive to the original. |
+| `cache` | `boolean` | `true` | Memoize search results per `(query, options)`, invalidated on any mutation and bypassed while discards are pending vacuum. Not present in MiniSearch. |
 
-Throws `MiniSearch: option "fields" must be provided` when `fields` is
-missing.
+Throws when `fields` is missing.
 
 ## Search options
 
@@ -64,9 +63,9 @@ the constructor defaults.
 
 | Method | Description |
 | --- | --- |
-| `search(query, options?)` | Returns scored results sorted by descending score. `query` is a string, a `{ queries: [...] }` combination tree, or the `MiniSearch.wildcard` symbol. |
+| `search(query, options?)` | Returns scored results sorted by descending score. `query` is a string, a `{ queries: [...] }` combination tree, or the `FerroSearch.wildcard` symbol. |
 | `searchJson(query, options?)` | Same, as a JSON string — pair with `JSON.parse` for the fastest path. |
-| `wildcardSearch(options?)` | Results for all documents (the original's `MiniSearch.wildcard`). |
+| `wildcardSearch(options?)` | Results for all documents. |
 | `autoSuggest(query, options?)` | Ranked query suggestions. Defaults: terms combine with `AND`, prefix search on the last term. |
 
 Each result carries `id`, `score`, `terms` (matched document terms),
@@ -89,4 +88,4 @@ Each result carries `id`, `score`, `terms` (matched document terms),
 | --- | --- |
 | `toJson()` | Plain-object index representation (MiniSearch serialization version 2). `JSON.stringify` produces a MiniSearch-compatible index. |
 | `toJsonString()` | The same serialization written natively in one pass — much faster. |
-| `MiniSearch.loadJson(json, options)` | Static. Loads a serialized index (version 1 or 2, from either library). Must receive the same options used when serializing. `loadJSON` is an alias matching the original's name. |
+| `FerroSearch.loadJson(json, options)` | Static. Loads a serialized index (version 1 or 2, from either library). Must receive the same options used when serializing. `loadJSON` is an alias. |

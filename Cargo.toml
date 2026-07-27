@@ -3,7 +3,7 @@ name = "ferrosearch"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Rust port of MiniSearch as a napi-rs native addon for Bun and Node"
+description = "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible"
 repository = "https://github.com/shift-labs-ai/ferrosearch"
 
 [lib]

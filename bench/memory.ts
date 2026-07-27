@@ -23,7 +23,7 @@ async function measureEngine(engine: "js" | "rust"): Promise<number> {
     };
   } else {
     // @ts-expect-error resolved after napi build
-    const { MiniSearch } = await import("../ferrosearch.js");
+    const { FerroSearch: MiniSearch } = await import("../ferrosearch.js");
     build = () => {
       const index = new MiniSearch(options);
       index.addAll(corpus);

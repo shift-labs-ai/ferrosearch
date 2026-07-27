@@ -1,18 +1,17 @@
 # Design document
 
-This document explains ferrosearch's design to developers contributing to the
-project. It follows the structure of MiniSearch's [design
-document](https://github.com/lucaong/minisearch/blob/master/DESIGN_DOCUMENT.md),
-because the architecture deliberately parallels the original; the sections
-below focus on what a Rust port adds or changes.
+This document describes ferrosearch's design for developers contributing to
+the project. ferrosearch implements the behavior of MiniSearch 7 in Rust,
+and its architecture parallels the original implementation; the sections
+below focus on what the native implementation adds or changes.
 
 ## Goals (and non-goals)
 
-1. **Behavioral fidelity.** Given the same documents, options, and queries,
-   ferrosearch returns what minisearch 7.2.0 returns: same scores, same
-   ordering (including ties), same match data, same errors, same serialized
-   index. Fidelity outranks speed: an optimization that changes observable
-   behavior is rejected.
+1. **Behavioral compatibility.** Given the same documents, options, and
+   queries, ferrosearch returns what minisearch 7.2.0 returns: same scores,
+   same ordering (including ties), same match data, same errors, same
+   serialized index. Compatibility outranks speed: an optimization that
+   changes observable behavior is rejected.
 2. **Native performance where the boundary allows it** — indexing from JSON,
    serialization, index loading, auto-suggest.
 3. **Small API surface**, mirroring the original class plus a few additive
@@ -20,15 +19,15 @@ below focus on what a Rust port adds or changes.
 
 Non-goals:
 
-- Function-valued options. JavaScript callbacks per token or per result would
-  destroy native performance and cannot cross the JSON boundary; the README
-  documents pre/post-processing workarounds instead.
-- Browser targets. Use the original (or a wasm build, which was considered and
-  rejected: string-heavy workloads pay UTF-8/UTF-16 conversion at the wasm
-  boundary on every call).
-- De-quirking. Where the original has surprising behavior — falsy-coalesced
-  boosts, wholesale `bm25` replacement, order-dependent cleanup bookkeeping —
-  ferrosearch replicates it and documents it, rather than "fixing" it.
+- Function-valued options. Per-token or per-result JavaScript callbacks
+  cannot cross the JSON boundary and would negate native performance; the
+  README documents pre/post-processing alternatives instead.
+- Browser targets. A wasm build was evaluated and rejected: string-heavy
+  workloads pay UTF-8/UTF-16 conversion at the wasm boundary on every call.
+- Behavior changes. Where MiniSearch has surprising behavior —
+  falsy-coalesced boosts, wholesale `bm25` replacement, order-dependent
+  cleanup bookkeeping — ferrosearch replicates and documents it rather than
+  altering it.
 
 ## Architecture
 
@@ -48,11 +47,11 @@ the bindings.
 
 ### The radix tree (`radix.rs`)
 
-Like the original's `SearchableMap`, the inverted index is a compressed prefix
-tree. The original stores each node as a JavaScript `Map` where the empty
-string `LEAF` key holds the value and other keys hold child edges, all in
-insertion order. That representation has a property that matters more than it
-looks: **two different iteration orders are observable through the API.**
+The inverted index is a compressed prefix tree, corresponding to
+MiniSearch's `SearchableMap`. MiniSearch stores each node as a JavaScript
+`Map` where the empty-string `LEAF` key holds the value and other keys hold
+child edges, all in insertion order. Two different iteration orders of that
+representation are observable through the API:
 
 - `TreeIterator` (entries, prefix views) visits each node's keys in *reverse*
   insertion order — its `dive`/`backtrack` walk consumes the key array from
@@ -78,13 +77,12 @@ the old one, replicating the `Map` delete-and-set ordering of `createPath` and
 
 ### Fuzzy search
 
-The algorithm is the original's reused-matrix variation of Wagner–Fischer:
-one Levenshtein matrix is allocated per query and updated incrementally during
-a depth-first traversal, computing only the diagonal band of `2 × maxDistance
-+ 1` and pruning a subtree as soon as a row's minimum exceeds the maximum
-distance. See the original design document for the full rationale; the
-trade-offs (versus Levenshtein automata and trigram indexes) carry over
-unchanged.
+The algorithm is MiniSearch's reused-matrix variation of Wagner–Fischer:
+one Levenshtein matrix is allocated per query and updated incrementally
+during a depth-first traversal, computing only the diagonal band of `2 ×
+maxDistance + 1` and pruning a subtree as soon as a row's minimum exceeds
+the maximum distance. The trade-offs versus Levenshtein automata and trigram
+indexes carry over unchanged.
 
 Two deliberate differences:
 
@@ -131,8 +129,8 @@ Result assembly has two equivalent forms: `Value` trees for the object API,
 and a single-pass JSON string writer for `searchJson`. The writer emits
 stored fields *after* the core keys with duplicate keys permitted —
 `JSON.parse` keeps the last occurrence, which reproduces the original's
-`Object.assign` override semantics (a stored field named `score` really does
-shadow the score, there as here).
+`Object.assign` override semantics: a stored field named `score` shadows the
+computed score, as in MiniSearch.
 
 ### JavaScript semantics (`js.rs`)
 
@@ -156,8 +154,7 @@ through the same chain — including the original's behavior of constructor
 
 ## The native boundary
 
-The main performance lesson of this port: **crossing the boundary dominates
-everything else.** Strategy:
+Crossing the native boundary dominates performance. Strategy:
 
 - Bulk data crosses as JSON strings. Native `serde_json` parsing/writing
   beats per-object binding conversion — ~4.5x for serialization, ~1.2x for
@@ -170,19 +167,19 @@ everything else.** Strategy:
   thousand-result queries. Fidelity forbids paging or lazy results, so this
   loss is accepted and documented in the README's performance table.
 - The package entry point (`ferrosearch.js`) routes `addAll` and `search`
-  through the JSON paths and restores the `MiniSearch.wildcard` symbol,
-  keeping the native class free of JavaScript-only concerns.
+  through the JSON paths and provides the `FerroSearch.wildcard` symbol
+  query, keeping the native class free of JavaScript-only concerns.
 
 ## Testing strategy
 
-Correctness is defined operationally: *the installed minisearch package is
-the oracle.* The Bun suite builds every scenario twice — original and port —
-and asserts equivalence of results (scores to 1e-9), full serialized index
-state after every lifecycle operation, error messages, and round-trips of
-serialized indexes in both directions. Corpora include unicode case folding,
-mixed-type fields, punctuation-only values, and colliding ID types. Rust unit
-tests cover the radix tree's structural operations directly.
+Correctness is defined operationally: the minisearch package is the
+reference implementation. The Bun suite builds every scenario twice —
+reference and ferrosearch — and asserts equivalence of results (scores to
+1e-9), full serialized index state after every lifecycle operation, error
+messages, and round trips of serialized indexes in both directions. Corpora
+include unicode case folding, mixed-type fields, punctuation-only values,
+and colliding ID types. Rust unit tests cover the radix tree's structural
+operations directly.
 
-This is what makes refactoring safe: the port's internals may be reshaped
-freely (and have been), because behavior is pinned externally against the
-implementation being ported.
+Because behavior is pinned externally against the reference implementation,
+internals can be restructured freely without behavioral risk.

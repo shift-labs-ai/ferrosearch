@@ -1,9 +1,9 @@
 //! Node-API bindings for the ferrosearch engine.
 //!
-//! The exposed class mirrors the MiniSearch API. Option values that are
-//! JavaScript functions (custom tokenizers, term processors, filters, and
-//! document boosters) cannot cross the JSON boundary and are not supported;
-//! the README documents these deltas.
+//! The exposed class is API-compatible with MiniSearch 7. Option values
+//! that are JavaScript functions (custom tokenizers, term processors,
+//! filters, and document boosters) cannot cross the JSON boundary and are
+//! not supported; the README documents these differences.
 
 #![deny(clippy::all)]
 
@@ -21,13 +21,13 @@ fn reason(error: String) -> Error {
     Error::from_reason(error)
 }
 
-#[napi(js_name = "MiniSearch")]
-pub struct MiniSearch {
+#[napi(js_name = "FerroSearch")]
+pub struct FerroSearch {
     engine: engine::Engine,
 }
 
 #[napi]
-impl MiniSearch {
+impl FerroSearch {
     #[napi(constructor)]
     pub fn new(options: Value) -> Result<Self> {
         engine::Engine::new(&options)
@@ -139,7 +139,7 @@ impl MiniSearch {
     }
 
     /// Returns results for all documents, equivalent to searching with the
-    /// `MiniSearch.wildcard` symbol in the original API.
+    /// `FerroSearch.wildcard` symbol.
     #[napi]
     pub fn wildcard_search(&self, options: Option<Value>) -> Result<Vec<Value>> {
         self.engine
