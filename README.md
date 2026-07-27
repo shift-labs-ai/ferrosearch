@@ -1,52 +1,222 @@
 # ferrosearch
 
-A Rust port of [MiniSearch](https://github.com/lucaong/minisearch), compiled as a
-[napi-rs](https://napi.rs) native addon for Bun and Node.
+A Rust port of [MiniSearch](https://github.com/lucaong/minisearch), compiled as
+a [napi-rs](https://napi.rs) native addon for Bun and Node.
 
 ferrosearch replicates MiniSearch's behavior — BM25+ scoring, prefix and fuzzy
 search, query combination, auto-suggestions, discard/vacuum lifecycle, and the
 version-2 serialization format. Indexes serialized by one library load in the
-other, and search results are numerically identical.
+other, and search results are numerically identical. An oracle test suite runs
+every feature side by side with the original and asserts equivalence down to
+scores, result order, match data, and error messages.
+
+- [API reference](docs/API.md)
+- [Design document](docs/DESIGN.md)
+
+## Use case
+
+Like the original, ferrosearch addresses use cases where full-text search
+features are needed — prefix search, fuzzy search, ranking, field boosting —
+and the indexed data fits in process memory. Being a native addon, it targets
+server-side Bun and Node processes rather than browsers.
+
+Choose ferrosearch over the JS original when your workload leans on its strong
+sides: indexing from JSON payloads, serializing and loading indexes,
+auto-suggestions, and selective queries. See [Performance](#performance) for
+the honest numbers, including where the JS original is faster.
+
+## Features
+
+- Exact match, prefix search, fuzzy match, field boosting, query combination
+  trees (`AND` / `OR` / `AND_NOT`).
+- Auto-suggestion engine for query auto-completion.
+- BM25+ result ranking, identical to MiniSearch.
+- Documents can be added, removed, discarded, and replaced at any time.
+- Index serialization compatible with MiniSearch in both directions.
+- JSON fast paths that keep bulk data out of the binding layer.
+
+## Installation
+
+The package builds from source and requires Rust and Bun (or Node):
+
+```bash
+bun install
+bun run build
+```
+
+Then import the class:
+
+```javascript
+import { MiniSearch } from "ferrosearch";
+```
 
 ## Usage
 
-```js
-import { MiniSearch } from "ferrosearch";
+### Basic usage
+
+```javascript
+const documents = [
+  { id: 1, title: "Moby Dick", text: "Call me Ishmael. Some years ago...", category: "fiction" },
+  { id: 2, title: "Zen and the Art of Motorcycle Maintenance", text: "I can see by my watch...", category: "fiction" },
+  { id: 3, title: "Neuromancer", text: "The sky above the port was...", category: "fiction" },
+  { id: 4, title: "Zen and the Art of Archery", text: "At first sight it must seem...", category: "non-fiction" },
+  // ...and more
+];
 
 const miniSearch = new MiniSearch({
-  fields: ["title", "text"],
-  storeFields: ["title", "category"],
+  fields: ["title", "text"], // fields to index for full-text search
+  storeFields: ["title", "category"], // fields to return with search results
 });
 
+// Index all documents
 miniSearch.addAll(documents);
-const results = miniSearch.search("zen art motorcycle", { prefix: true, fuzzy: 0.2 });
+
+// Search with default options
+const results = miniSearch.search("zen art motorcycle");
+// => [
+//   { id: 2, title: 'Zen and the Art of Motorcycle Maintenance', category: 'fiction', score: 2.77258, match: { ... } },
+//   { id: 4, title: 'Zen and the Art of Archery', category: 'non-fiction', score: 1.38629, match: { ... } }
+// ]
 ```
 
-JSON-string fast paths avoid materializing objects through the native
-bindings, in both directions:
+### Search options
 
-```js
-const results = JSON.parse(miniSearch.searchJson("zen art motorcycle"));
-miniSearch.addAllJson(jsonArrayOfDocuments);
+```javascript
+// Search only specific fields
+miniSearch.search("zen", { fields: ["title"] });
+
+// Boost some fields (here "title")
+miniSearch.search("zen", { boost: { title: 2 } });
+
+// Prefix search (so that 'moto' will match 'motorcycle')
+miniSearch.search("moto", { prefix: true });
+
+// Fuzzy search, here with a max edit distance of 0.2 * term length, rounded
+// to the nearest integer. The misspelled 'ismael' will match 'ishmael'.
+miniSearch.search("ismael", { fuzzy: 0.2 });
+
+// Combine terms with AND instead of the default OR
+miniSearch.search("zen art", { combineWith: "AND" });
+
+// Default search options can be set upon initialization
+const tuned = new MiniSearch({
+  fields: ["title", "text"],
+  searchOptions: { boost: { title: 2 }, fuzzy: 0.2 },
+});
+```
+
+### Query combination trees
+
+Subqueries can be combined with different operators and options, exactly like
+the original's expression trees:
+
+```javascript
+// Documents that contain "zen" and ("motorcycle" or "archery")
+miniSearch.search({
+  combineWith: "AND",
+  queries: [
+    "zen",
+    { combineWith: "OR", queries: ["motorcycle", "archery"] },
+  ],
+});
+```
+
+### Wildcard search
+
+The original accepts a `MiniSearch.wildcard` symbol as the query; symbols
+cannot cross the native boundary, so ferrosearch exposes a method instead:
+
+```javascript
+// Results for all documents, with stored fields
+miniSearch.wildcardSearch();
+```
+
+### Auto suggestions
+
+```javascript
+miniSearch.autoSuggest("zen ar");
+// => [ { suggestion: 'zen archery art', terms: [ 'zen', 'archery', 'art' ], score: 1.73332 },
+//      { suggestion: 'zen art', terms: [ 'zen', 'art' ], score: 1.21313 } ]
+
+// Fuzzy suggestions for misspelled input
+miniSearch.autoSuggest("neromancer", { fuzzy: 0.2 });
+// => [ { suggestion: 'neuromancer', terms: [ 'neuromancer' ], score: 1.03998 } ]
+```
+
+Suggestions are ranked by the relevance of the documents that the suggested
+search would return.
+
+### Removing, discarding, and replacing documents
+
+```javascript
+// Immediate removal: requires the full, unchanged document
+miniSearch.remove(documents[0]);
+
+// Discard by ID: faster, cleans up lazily via vacuuming
+miniSearch.discard(2);
+
+// Replace a document with a new version under the same ID
+miniSearch.replace({ id: 3, title: "Neuromancer (2nd ed.)", text: "..." });
+
+// Vacuuming removes lingering references to discarded documents. It runs
+// automatically by default, or manually:
+miniSearch.vacuum();
+```
+
+### Serialization
+
+Indexes serialize to MiniSearch's format and load in either library:
+
+```javascript
+const serialized = miniSearch.toJsonString();
+
+// Later, or in the JS original — both work:
+const restored = MiniSearch.loadJson(serialized, { fields: ["title", "text"], storeFields: ["title", "category"] });
+```
+
+`loadJson` must be given the same options used when the index was serialized.
+
+### JSON fast paths
+
+Bulk data is fastest as JSON strings, which cross the native boundary once
+instead of converting object graphs through the bindings:
+
+```javascript
+miniSearch.addAllJson(jsonArrayOfDocuments); // e.g. a file or network payload
+const results = JSON.parse(miniSearch.searchJson("zen art", { prefix: true }));
 const serialized = miniSearch.toJsonString();
 ```
 
-## API differences from MiniSearch
+Each fast path is exactly equivalent to its object-based counterpart.
 
-- `wildcardSearch(options)` replaces the `MiniSearch.wildcard` symbol query.
-- `vacuum()` is synchronous and complete; native code has no main thread to block.
-- Function-valued options (`tokenize`, `processTerm`, `extractField`, `filter`,
-  `boostDocument`, `boostTerm`, `logger`, function forms of `prefix`/`fuzzy`)
-  are not supported by the native engine. The default tokenizer, term
-  processor, and field extractor are implemented in Rust; index-corruption
-  warnings go to stderr.
-- A wildcard node inside a `queries` combination is not supported; use
-  `wildcardSearch` at the top level.
+## Differences from MiniSearch
+
+Function-valued options cannot cross the native boundary and are not
+supported: `tokenize`, `processTerm`, `extractField`, `stringifyField`,
+`filter`, `boostDocument`, `boostTerm`, `logger`, and the function forms of
+`prefix` and `fuzzy`. The defaults are implemented in Rust: tokenization
+splits on Unicode space and punctuation, terms are lowercased, and fields are
+read as plain object keys with JavaScript string coercion.
+
+Common workarounds:
+
+- Custom tokenization or stemming: pre-process documents into an indexed field
+  before `add`, and pre-process queries before `search`.
+- `filter`: filter the returned results — equivalent, since the original
+  applies `filter` to fully assembled results.
+- Nested field extraction: flatten the fields before indexing.
+
+Other deltas:
+
+- `wildcardSearch(options)` replaces the `MiniSearch.wildcard` symbol query;
+  a wildcard node inside a `queries` combination is not supported.
+- `vacuum()` is synchronous and complete; native code has no main thread to
+  block. `addAllAsync` and `loadJSONAsync` are unnecessary for the same
+  reason.
+- Index-corruption warnings (removing a changed document) go to stderr.
 - A partial `bm25` object replaces the whole parameter set, exactly like the
   original; the resulting NaN scores surface as `null` (as they would through
   `JSON.stringify`), because JSON has no NaN.
-- `addAllAsync` and `loadJSONAsync` are unnecessary: the synchronous native
-  calls do not block the JavaScript thread the way pure-JS indexing does.
 
 ## Performance
 
@@ -71,7 +241,7 @@ auto-suggest, and index loading. Reducing result-transfer cost is the main
 open optimization — within the constraint that results stay exactly
 MiniSearch-shaped.
 
-## Faithfulness notes
+## Faithfulness
 
 - Insertion-ordered maps replicate JavaScript `Map` iteration order, including
   the original `TreeIterator`'s reverse-insertion-order traversal and
@@ -82,17 +252,23 @@ MiniSearch-shaped.
 - The stale-reference cleanup that MiniSearch performs during search (after
   `discard`) is replicated, including its order-dependent `matchingFields`
   bookkeeping.
+- The oracle suite (59 tests, ~11,000 assertions) compares every feature
+  against the installed minisearch package: search batteries across corpora
+  (unicode, mixed-type fields, odd IDs), full index-state equality after every
+  lifecycle operation, error messages, and serialization round trips in both
+  directions.
 
 ## Development
 
 ```bash
 bun install
 bun run verify   # cargo fmt --check, clippy, cargo test, release build, bun test
+bun run bench    # benchmark against the JS original
 ```
 
-The Bun test suite asserts parity against the original minisearch package on
-every search mode, the document lifecycle, and serialization in both
-directions.
+The [design document](docs/DESIGN.md) explains the internals: the slot-based
+radix tree, the reused-matrix fuzzy search, interned-term scoring, and the
+native-boundary strategy.
 
 ## License
 
