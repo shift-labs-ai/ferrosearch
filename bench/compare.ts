@@ -1,0 +1,148 @@
+// Benchmark comparing ferrosearch against the original JavaScript MiniSearch
+// on the Billboard corpus (5,086 documents), mirroring the scenarios of the
+// original repository's benchmark suite.
+//
+// Run with: bun run bench:compare
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import JsMiniSearch from "minisearch";
+// @ts-expect-error resolved after napi build
+import { FerroSearch as MiniSearch } from "../ferrosearch.js";
+
+const corpus: Record<string, string>[] = JSON.parse(
+  readFileSync(join(import.meta.dir, "billboard.json"), "utf8"),
+);
+const options = { fields: ["artist", "title"], storeFields: ["year"] };
+
+const queries = ["love", "rolling stones", "virgin", "beatles", "the", "michael"];
+
+function measure(fn: () => void, minMs = 500): number {
+  // Warm up.
+  for (let i = 0; i < 3; i++) fn();
+  let iterations = 0;
+  const start = performance.now();
+  let elapsed = 0;
+  do {
+    fn();
+    iterations++;
+    elapsed = performance.now() - start;
+  } while (elapsed < minMs);
+  return elapsed / iterations;
+}
+
+interface Row {
+  name: string;
+  js: number;
+  rust: number;
+}
+
+const rows: Row[] = [];
+
+function compare(name: string, js: () => void, rust: () => void) {
+  rows.push({ name, js: measure(js), rust: measure(rust) });
+}
+
+// -- Indexing ----------------------------------------------------------------
+
+compare(
+  "indexing (5,086 docs)",
+  () => new JsMiniSearch(options).addAll(corpus),
+  () => new MiniSearch(options).addAll(corpus),
+);
+
+const corpusJson = JSON.stringify(corpus);
+compare(
+  "indexing from JSON string",
+  () => new JsMiniSearch(options).addAll(JSON.parse(corpusJson)),
+  () => new MiniSearch(options).addAllJson(corpusJson),
+);
+
+const js = new JsMiniSearch(options);
+js.addAll(corpus);
+const rust = new MiniSearch(options);
+rust.addAll(corpus);
+// Cold search rows disable the result cache; a dedicated row measures it.
+const rustCold = new MiniSearch({ ...options, cache: false });
+rustCold.addAll(corpus);
+
+// -- Search ------------------------------------------------------------------
+
+function searchSuite(name: string, searchOptions?: Record<string, unknown>) {
+  compare(
+    name,
+    () => {
+      for (const query of queries) js.search(query, searchOptions);
+    },
+    () => {
+      for (const query of queries) rustCold.search(query, searchOptions);
+    },
+  );
+}
+
+searchSuite("exact search");
+
+compare(
+  "repeated queries (result cache)",
+  () => {
+    for (const query of queries) js.search(query);
+  },
+  () => {
+    for (const query of queries) rust.search(query);
+  },
+);
+
+// Selective queries returning few or no results: result transfer is
+// negligible, so the engines are at parity.
+const rareQueries = ["xylophone", "virgin", "zzyzx"];
+compare(
+  "selective queries (few results)",
+  () => {
+    for (const query of rareQueries) js.search(query);
+  },
+  () => {
+    for (const query of rareQueries) rustCold.search(query);
+  },
+);
+searchSuite("prefix search", { prefix: true });
+searchSuite("fuzzy search (0.2)", { fuzzy: 0.2 });
+searchSuite("combined search (prefix + fuzzy)", { prefix: true, fuzzy: 0.2 });
+searchSuite("combined with AND", { combineWith: "AND" });
+
+compare(
+  "auto suggestion",
+  () => {
+    for (const query of queries) js.autoSuggest(query, { fuzzy: 0.2 });
+  },
+  () => {
+    for (const query of queries) rust.autoSuggest(query, { fuzzy: 0.2 });
+  },
+);
+
+// -- Serialization -----------------------------------------------------------
+
+const serialized = JSON.stringify(js);
+compare(
+  "serialize index",
+  () => JSON.stringify(js),
+  () => rust.toJsonString(),
+);
+compare(
+  "load serialized index",
+  () => JsMiniSearch.loadJSON(serialized, options),
+  () => MiniSearch.loadJson(serialized, options),
+);
+
+// -- Report ------------------------------------------------------------------
+
+console.log(`Corpus: ${corpus.length} documents, ${rust.termCount} terms\n`);
+const nameWidth = Math.max(...rows.map((row) => row.name.length)) + 2;
+console.log(
+  `${"benchmark".padEnd(nameWidth)}${"js (ms)".padStart(10)}${"rust (ms)".padStart(11)}${"speedup".padStart(10)}`,
+);
+for (const row of rows) {
+  const speedup = row.js / row.rust;
+  console.log(
+    `${row.name.padEnd(nameWidth)}${row.js.toFixed(3).padStart(10)}${row.rust.toFixed(3).padStart(11)}${`${speedup.toFixed(2)}x`.padStart(10)}`,
+  );
+}

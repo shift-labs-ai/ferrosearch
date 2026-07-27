@@ -1,0 +1,26 @@
+{
+  "name": "ferrosearch",
+  "version": "0.1.0",
+  "description": "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible",
+  "license": "MIT",
+  "repository": "github:shift-labs-ai/ferrosearch",
+  "main": "ferrosearch.js",
+  "types": "ferrosearch.d.ts",
+  "napi": {
+    "name": "ferrosearch"
+  },
+  "scripts": {
+    "bench:compare": "bun bench/compare.ts",
+    "bench:memory": "bun bench/memory.ts",
+    "build": "napi build --release --strip --platform",
+    "build:debug": "napi build --platform",
+    "test": "bun test",
+    "test:rust": "cargo test",
+    "verify": "cargo fmt --check && cargo clippy -- -D warnings && cargo test && napi build --release --strip --platform && bun test"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "2.18.4",
+    "@types/bun": "1.3.14",
+    "minisearch": "7.2.0"
+  }
+}

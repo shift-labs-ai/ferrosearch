@@ -1,0 +1,63 @@
+// Memory comparison between ferrosearch and the JavaScript MiniSearch on the
+// Billboard corpus. Each engine is measured in a fresh process: the corpus is
+// loaded, RSS is sampled, the index is built, and RSS is sampled again.
+//
+// Run with: bun run bench:memory
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const corpusPath = join(import.meta.dir, "billboard.json");
+const options = { fields: ["artist", "title"], storeFields: ["year"] };
+
+async function measureEngine(engine: "js" | "rust"): Promise<number> {
+  const corpus = JSON.parse(readFileSync(corpusPath, "utf8"));
+
+  let build: () => unknown;
+  if (engine === "js") {
+    const { default: JsMiniSearch } = await import("minisearch");
+    build = () => {
+      const index = new JsMiniSearch(options);
+      index.addAll(corpus);
+      return index;
+    };
+  } else {
+    // @ts-expect-error resolved after napi build
+    const { FerroSearch: MiniSearch } = await import("../ferrosearch.js");
+    build = () => {
+      const index = new MiniSearch(options);
+      index.addAll(corpus);
+      return index;
+    };
+  }
+
+  Bun.gc(true);
+  const before = process.memoryUsage().rss;
+  const indexes = Array.from({ length: 10 }, build);
+  Bun.gc(true);
+  const after = process.memoryUsage().rss;
+  // Keep the indexes alive until after the measurement.
+  if (indexes.length !== 10) throw new Error("unreachable");
+  return (after - before) / indexes.length;
+}
+
+if (process.env.MEASURE_ENGINE) {
+  const bytes = await measureEngine(process.env.MEASURE_ENGINE as "js" | "rust");
+  console.log(bytes);
+} else {
+  const megabytes = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
+  const results: Record<string, number> = {};
+  for (const engine of ["js", "rust"] as const) {
+    const run = Bun.spawnSync(["bun", import.meta.path], {
+      env: { ...process.env, MEASURE_ENGINE: engine },
+    });
+    if (run.exitCode !== 0) {
+      throw new Error(`measurement failed for ${engine}: ${run.stderr.toString()}`);
+    }
+    results[engine] = Number(run.stdout.toString().trim());
+  }
+  console.log(`RSS per index (Billboard corpus, average of 10 indexes):`);
+  console.log(`  minisearch (JS)  ${megabytes(results.js)} MB`);
+  console.log(`  ferrosearch      ${megabytes(results.rust)} MB`);
+  console.log(`  ratio            ${(results.rust / results.js).toFixed(2)}x`);
+}

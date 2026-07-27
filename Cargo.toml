@@ -1,0 +1,27 @@
+[package]
+name = "ferrosearch"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible"
+repository = "https://github.com/shift-labs-ai/ferrosearch"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+indexmap = "2"
+napi = { version = "2", default-features = false, features = ["napi8", "serde-json"] }
+napi-derive = "2"
+regex = "1"
+rustc-hash = "2"
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
