@@ -24,6 +24,7 @@ jobs:
     needs: check-version
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-14
@@ -36,10 +37,10 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            setup: sudo apt-get update && sudo apt-get install -y musl-tools
+            musl: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            setup: sudo apt-get update && sudo apt-get install -y musl-tools
+            musl: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -51,16 +52,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - name: Install target toolchain
-        if: matrix.setup
-        run: ${{ matrix.setup }}
+      # The napi CLI links musl targets with zig.
+      - uses: mlugg/setup-zig@v2
+        if: matrix.musl
+        with:
+          version: 0.13.0
       - run: bun install --frozen-lockfile
-      - run: bunx napi build --release --strip --platform --target ${{ matrix.target }}
-        env:
-          # napi cdylibs on musl require dynamic linking against musl libc.
-          RUSTFLAGS: ${{ contains(matrix.target, 'musl') && '-C target-feature=-crt-static' || '' }}
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      - run: bunx napi build --release --strip --platform --target ${{ matrix.target }} ${{ matrix.musl && '--zig' || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.target }}
