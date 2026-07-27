@@ -98,10 +98,15 @@ Two deliberate differences:
 ### The engine (`engine.rs`)
 
 The index maps `term → field → document → term frequency`, with fields and
-documents referenced by short numeric IDs, exactly like the original. All
-integer-keyed maps are insertion-ordered `IndexMap`s with the Fx hasher: JS
-`Map` iteration order is observable in scoring and tie ordering, so ordinary
-hash maps would silently diverge.
+documents referenced by short numeric IDs, exactly like the original. JS
+`Map` iteration order is observable in scoring and tie ordering, so every
+replacement structure must preserve insertion order: the document-keyed
+engine maps are insertion-ordered `IndexMap`s with the Fx hasher, and the
+posting lists themselves are flat insertion-ordered pair vectors (`VecMap`).
+Posting lists are typically tiny, so linear lookup — scanning from the back,
+where the most recently indexed document lives — beats hashing, and dropping
+the per-`(term, field)` hash-table overhead cuts index memory by about 20%
+(roughly 3x smaller than the JS original's `Map`-based index).
 
 Scoring is BM25+ with the original's constants and the same
 order-of-operations, including its quirks:

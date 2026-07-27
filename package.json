@@ -10,7 +10,8 @@
     "name": "ferrosearch"
   },
   "scripts": {
-    "bench": "bun bench/compare.ts",
+    "bench:compare": "bun bench/compare.ts",
+    "bench:memory": "bun bench/memory.ts",
     "build": "napi build --release --strip --platform",
     "build:debug": "napi build --platform",
     "test": "bun test",

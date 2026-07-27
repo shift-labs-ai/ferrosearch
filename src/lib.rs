@@ -11,6 +11,7 @@ mod engine;
 mod js;
 mod options;
 mod radix;
+mod vecmap;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;

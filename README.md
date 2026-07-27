@@ -220,7 +220,7 @@ Other deltas:
 
 ## Performance
 
-Run the committed benchmark with `bun run bench` (Billboard corpus, 5,086
+Run the committed benchmark with `bun run bench:compare` (Billboard corpus, 5,086
 documents, two indexed fields, compared against minisearch 7.2.0). Measured on
 Bun 1.3, Apple Silicon, with warmup:
 
@@ -233,6 +233,10 @@ Bun 1.3, Apple Silicon, with warmup:
 | Selective queries (few results) | 1.0x |
 | Indexing from JavaScript objects | 0.9x |
 | Exact / prefix / fuzzy search (mixed, incl. broad queries) | 0.3–0.5x |
+
+Memory (`bun run bench:memory`, RSS per index on the same corpus):
+ferrosearch ≈ 7.5 MB versus ≈ 22 MB for the JS original — about 3x smaller,
+thanks to flat-vector posting lists instead of per-entry `Map` objects.
 
 Honest summary: once the JavaScript JIT is warm, the original wins most bulk
 search scenarios, because every ferrosearch result still crosses the native
@@ -264,7 +268,8 @@ MiniSearch-shaped.
 ```bash
 bun install
 bun run verify   # cargo fmt --check, clippy, cargo test, release build, bun test
-bun run bench    # benchmark against the JS original
+bun run bench:compare   # speed benchmark against the JS original
+bun run bench:memory    # memory benchmark against the JS original
 ```
 
 The [design document](docs/DESIGN.md) explains the internals: the slot-based

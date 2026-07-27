@@ -2,7 +2,7 @@
 // on the Billboard corpus (5,086 documents), mirroring the scenarios of the
 // original repository's benchmark suite.
 //
-// Run with: bun run bench
+// Run with: bun run bench:compare
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

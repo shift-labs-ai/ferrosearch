@@ -23,14 +23,16 @@ use crate::options::{
     Result, SearchOptions,
 };
 use crate::radix::RadixTree;
+use crate::vecmap::VecMap;
 
-/// Insertion-ordered map with a fast non-cryptographic hasher, used for all
-/// integer-keyed internal maps.
+/// Insertion-ordered map with a fast non-cryptographic hasher, used for the
+/// document-keyed engine maps.
 type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 
-/// For each field, the number of occurrences of a term per document.
-type DocFreqs = FxIndexMap<u32, u32>;
-type FieldTermData = FxIndexMap<u32, DocFreqs>;
+/// For each field, the number of occurrences of a term per document. Posting
+/// lists are flat pair vectors: see the `vecmap` module for why.
+type DocFreqs = VecMap<u32, u32>;
+type FieldTermData = VecMap<u32, DocFreqs>;
 
 const SERIALIZATION_VERSION: u64 = 2;
 
@@ -417,10 +419,10 @@ impl Engine {
         let mut stale: Vec<(String, Vec<(u32, u32)>)> = Vec::new();
         self.index.for_each(&mut |term, fields_data| {
             let mut term_stale = Vec::new();
-            for (&field_id, doc_freqs) in fields_data {
-                for &doc_id in doc_freqs.keys() {
-                    if !self.document_ids.contains_key(&doc_id) {
-                        term_stale.push((field_id, doc_id));
+            for (field_id, doc_freqs) in fields_data.iter() {
+                for (doc_id, _) in doc_freqs.iter() {
+                    if !self.document_ids.contains_key(doc_id) {
+                        term_stale.push((*field_id, *doc_id));
                     }
                 }
             }
@@ -435,12 +437,12 @@ impl Engine {
             };
             for (field_id, doc_id) in refs {
                 let remove_field = fields_data
-                    .get(&field_id)
+                    .get(field_id)
                     .is_some_and(|doc_freqs| doc_freqs.len() <= 1);
                 if remove_field {
-                    fields_data.shift_remove(&field_id);
-                } else if let Some(doc_freqs) = fields_data.get_mut(&field_id) {
-                    doc_freqs.shift_remove(&doc_id);
+                    fields_data.remove(field_id);
+                } else if let Some(doc_freqs) = fields_data.get_mut(field_id) {
+                    doc_freqs.remove(doc_id);
                 }
             }
             if fields_data.is_empty() {
@@ -479,12 +481,11 @@ impl Engine {
     }
 
     fn add_term(&mut self, field_id: u32, document_id: u32, term: &str) {
-        let index_data = self.index.fetch_with(term, FieldTermData::default);
-        let freq = index_data
-            .entry(field_id)
-            .or_default()
-            .entry(document_id)
-            .or_insert(0);
+        let freq = self
+            .index
+            .fetch_with(term, FieldTermData::default)
+            .get_or_insert_with(field_id, DocFreqs::default)
+            .get_or_insert_with(document_id, || 0);
         *freq += 1;
     }
 
@@ -499,8 +500,8 @@ impl Engine {
         };
 
         let freq = index_data
-            .get(&field_id)
-            .and_then(|field_index| field_index.get(&document_id))
+            .get(field_id)
+            .and_then(|field_index| field_index.get(document_id))
             .copied();
         match freq {
             None => {
@@ -509,16 +510,16 @@ impl Engine {
             }
             Some(freq) if freq <= 1 => {
                 let remove_field = index_data
-                    .get(&field_id)
+                    .get(field_id)
                     .is_some_and(|field_index| field_index.len() <= 1);
                 if remove_field {
-                    index_data.shift_remove(&field_id);
-                } else if let Some(field_index) = index_data.get_mut(&field_id) {
-                    field_index.shift_remove(&document_id);
+                    index_data.remove(field_id);
+                } else if let Some(field_index) = index_data.get_mut(field_id) {
+                    field_index.remove(document_id);
                 }
             }
             Some(freq) => {
-                if let Some(field_index) = index_data.get_mut(&field_id) {
+                if let Some(field_index) = index_data.get_mut(field_id) {
                     field_index.insert(document_id, freq - 1);
                 }
             }
@@ -884,7 +885,7 @@ impl Engine {
             let Some(&field_id) = self.field_ids.get(field) else {
                 continue;
             };
-            let Some(field_term_freqs) = field_term_data.get(&field_id) else {
+            let Some(field_term_freqs) = field_term_data.get(field_id) else {
                 continue;
             };
 
@@ -896,7 +897,7 @@ impl Engine {
                 .flatten()
                 .unwrap_or(0.0);
 
-            for (&doc_id, &term_freq) in field_term_freqs {
+            for &(doc_id, term_freq) in field_term_freqs.iter() {
                 if !self.document_ids.contains_key(&doc_id) {
                     stale.push((field_id, doc_id));
                     matching_fields -= 1;
@@ -1073,9 +1074,9 @@ impl Engine {
         let mut index_entries = Vec::new();
         self.index.for_each(&mut |term, fields_data| {
             let mut data = JsonMap::new();
-            for (field_id, doc_freqs) in fields_data {
+            for (field_id, doc_freqs) in fields_data.iter() {
                 let mut freqs = JsonMap::new();
-                for (doc_id, freq) in doc_freqs {
+                for (doc_id, freq) in doc_freqs.iter() {
                     freqs.insert(doc_id.to_string(), json!(freq));
                 }
                 data.insert(field_id.to_string(), Value::Object(freqs));
