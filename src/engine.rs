@@ -58,7 +58,7 @@ const DEFAULT_WEIGHTS: Weights = Weights {
     prefix: 0.375,
 };
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub enum Prefix {
     Enabled(bool),
     /// Prefix search only on the last query term: the default for
@@ -76,7 +76,7 @@ pub enum Fuzzy {
     Value(f64),
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 pub enum Combine {
     Or,
     And,
@@ -212,7 +212,7 @@ fn string_array(value: &Value, name: &str) -> Result<Vec<String>> {
 
 /// Renders a JSON value the way JavaScript's string coercion would, for use in
 /// error messages and default field stringification.
-pub fn js_to_string(value: &Value) -> String {
+fn js_to_string(value: &Value) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),
@@ -962,7 +962,7 @@ impl Engine {
             .unwrap_or("")
     }
 
-    pub fn wildcard_search(&mut self, options: &Value) -> Result<Vec<Value>> {
+    pub fn wildcard_search(&self, options: &Value) -> Result<Vec<Value>> {
         let _ = options; // Document boosting functions are handled by the wrapper.
         let interner = Interner::default();
         let hits: Vec<Hit> = self

@@ -132,7 +132,7 @@ impl MiniSearch {
     /// Returns results for all documents, equivalent to searching with the
     /// `MiniSearch.wildcard` symbol in the original API.
     #[napi]
-    pub fn wildcard_search(&mut self, options: Option<Value>) -> Result<Vec<Value>> {
+    pub fn wildcard_search(&self, options: Option<Value>) -> Result<Vec<Value>> {
         self.engine
             .wildcard_search(options.as_ref().unwrap_or(&Value::Null))
             .map_err(reason)
