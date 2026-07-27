@@ -36,6 +36,11 @@ type FieldTermData = VecMap<u32, DocFreqs>;
 
 const SERIALIZATION_VERSION: u64 = 2;
 
+/// Maximum number of memoized search results. Sized for interactive
+/// workloads (autocomplete keystrokes, dashboard refreshes) where the same
+/// few queries repeat.
+const RESULT_CACHE_CAP: usize = 100;
+
 /// Matches any Unicode space, newline, or punctuation character.
 fn tokenizer() -> &'static Regex {
     static TOKENIZER: OnceLock<Regex> = OnceLock::new();
@@ -158,6 +163,14 @@ pub struct Engine {
     stored_fields: FxIndexMap<u32, Vec<(u16, Value)>>,
     stored_field_names: Vec<String>,
     dirt_count: u32,
+
+    /// Memoized `(query, options) → result JSON`, cleared on every mutation.
+    /// Only consulted while `dirt_count == 0`: with no discarded documents
+    /// there are no stale references, so search performs no self-healing and
+    /// is a pure function of the index. Under that condition a cache hit is
+    /// observably identical to recomputing — including `termCount`.
+    result_cache: FxIndexMap<(String, String), String>,
+    cache_enabled: bool,
 }
 
 impl Engine {
@@ -213,7 +226,15 @@ impl Engine {
             next_id: 0,
             stored_fields: FxIndexMap::default(),
             dirt_count: 0,
+            result_cache: FxIndexMap::default(),
+            cache_enabled: !matches!(object.get("cache"), Some(Value::Bool(false))),
         })
+    }
+
+    fn invalidate_cache(&mut self) {
+        if !self.result_cache.is_empty() {
+            self.result_cache.clear();
+        }
     }
 
     // -- Indexing ------------------------------------------------------------
@@ -286,6 +307,7 @@ impl Engine {
         if self.id_to_short.contains_key(&key) {
             return Err(format!("MiniSearch: duplicate ID {}", js_to_string(&id)));
         }
+        self.invalidate_cache();
 
         let short_id = self.next_id;
         self.next_id += 1;
@@ -335,6 +357,7 @@ impl Engine {
             ));
         };
 
+        self.invalidate_cache();
         for field in self.tokenized_fields(document) {
             self.remove_field_length(field.field_id, self.document_count, field.unique_tokens);
             for term in &field.terms {
@@ -351,6 +374,7 @@ impl Engine {
     }
 
     pub fn remove_all(&mut self) {
+        self.invalidate_cache();
         self.index.clear();
         self.document_count = 0;
         self.document_ids.clear();
@@ -370,6 +394,7 @@ impl Engine {
             ));
         };
 
+        self.invalidate_cache();
         self.id_to_short.shift_remove(&key);
         self.document_ids.shift_remove(&short_id);
         self.stored_fields.shift_remove(&short_id);
@@ -419,6 +444,7 @@ impl Engine {
     /// JavaScript main thread; native code has no such constraint, so
     /// vacuuming is synchronous and complete.
     pub fn vacuum(&mut self) {
+        self.invalidate_cache();
         let initial_dirt_count = self.dirt_count;
 
         let mut stale: Vec<(String, Vec<(u32, u32)>)> = Vec::new();
@@ -629,9 +655,30 @@ impl Engine {
     /// avoiding intermediate value trees. This is the fast path used by the
     /// JavaScript wrapper together with `JSON.parse`.
     pub fn search_to_json_string(&mut self, query: &Value, options: &Value) -> Result<String> {
+        let cache_key = if self.cache_enabled && self.dirt_count == 0 {
+            let key = (
+                serde_json::to_string(query).unwrap_or_default(),
+                serde_json::to_string(options).unwrap_or_default(),
+            );
+            if let Some(cached) = self.result_cache.get(&key) {
+                return Ok(cached.clone());
+            }
+            Some(key)
+        } else {
+            None
+        };
+
         let base = self.default_search.clone();
         let (hits, interner) = self.search_hits(query, options, &base)?;
-        Ok(self.hits_to_json_string(&hits, &interner))
+        let result = self.hits_to_json_string(&hits, &interner);
+
+        if let Some(key) = cache_key {
+            if self.result_cache.len() >= RESULT_CACHE_CAP {
+                self.result_cache.shift_remove_index(0);
+            }
+            self.result_cache.insert(key, result.clone());
+        }
+        Ok(result)
     }
 
     pub fn wildcard_search(&self, options: &Value) -> Result<Vec<Value>> {

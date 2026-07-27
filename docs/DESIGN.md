@@ -164,8 +164,14 @@ everything else.** Strategy:
   bulk indexing.
 - Bulk search cannot be won this way: a warm JIT builds thousands of
   monomorphic result objects faster than any serialize-transfer-parse cycle.
-  Fidelity forbids paging or lazy results, so this loss is accepted and
-  documented in the README's performance table.
+  Even the result cache — memoized `(query, options) → JSON`, consulted only
+  while `dirt_count == 0`, where search is provably pure — still pays
+  `JSON.parse` on every hit, which alone exceeds a warm JS search for
+  thousand-result queries. Fidelity forbids paging or lazy results, so this
+  loss is accepted and documented in the README's performance table.
+- The package entry point (`ferrosearch.js`) routes `addAll` and `search`
+  through the JSON paths and restores the `MiniSearch.wildcard` symbol,
+  keeping the native class free of JavaScript-only concerns.
 
 ## Testing strategy
 

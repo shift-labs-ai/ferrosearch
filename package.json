@@ -4,8 +4,8 @@
   "description": "Rust port of MiniSearch as a napi-rs native addon for Bun and Node",
   "license": "MIT",
   "repository": "github:shift-labs-ai/ferrosearch",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "ferrosearch.js",
+  "types": "ferrosearch.d.ts",
   "napi": {
     "name": "ferrosearch"
   },

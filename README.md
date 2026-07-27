@@ -123,11 +123,13 @@ miniSearch.search({
 
 ### Wildcard search
 
-The original accepts a `MiniSearch.wildcard` symbol as the query; symbols
-cannot cross the native boundary, so ferrosearch exposes a method instead:
+The `MiniSearch.wildcard` symbol works like the original's (the package
+entry point routes it to the native `wildcardSearch` method, which is also
+available directly):
 
 ```javascript
 // Results for all documents, with stored fields
+miniSearch.search(MiniSearch.wildcard);
 miniSearch.wildcardSearch();
 ```
 
@@ -178,8 +180,10 @@ const restored = MiniSearch.loadJson(serialized, { fields: ["title", "text"], st
 
 ### JSON fast paths
 
-Bulk data is fastest as JSON strings, which cross the native boundary once
-instead of converting object graphs through the bindings:
+Bulk data crosses the native boundary as JSON strings — once, instead of
+converting object graphs through the bindings. The package entry point
+already routes `addAll` and `search` through these paths; they are also
+available directly:
 
 ```javascript
 miniSearch.addAllJson(jsonArrayOfDocuments); // e.g. a file or network payload
@@ -188,6 +192,17 @@ const serialized = miniSearch.toJsonString();
 ```
 
 Each fast path is exactly equivalent to its object-based counterpart.
+Documents, options, and queries must be JSON-serializable — which the native
+boundary requires in any case.
+
+### Result cache
+
+Search results are memoized per `(query, options)` and invalidated on any
+mutation, so repeated queries — autocomplete keystrokes, dashboard refreshes
+— skip the engine entirely. The cache is only consulted when no discarded
+documents are pending vacuum, where search is provably a pure function of
+the index, so cached results are observably identical to recomputed ones.
+Disable it with `new MiniSearch({ ..., cache: false })`.
 
 ## Differences from MiniSearch
 
@@ -227,25 +242,27 @@ Bun 1.3, Apple Silicon, with warmup:
 | Benchmark | Speedup vs JS |
 | --- | --- |
 | Serialize index (`toJsonString`) | 5x |
-| Load serialized index | 2.3x |
-| Auto suggestion | 1.5x |
-| Indexing from a JSON string (`addAllJson`) | 1.2–1.3x |
+| Load serialized index | 2.2x |
+| Auto suggestion | 1.6x |
+| Indexing from a JSON string (`addAllJson`) | 1.3x |
+| Indexing from JavaScript objects | 1.15x |
 | Selective queries (few results) | 1.0x |
-| Indexing from JavaScript objects | 0.9x |
-| Exact / prefix / fuzzy search (mixed, incl. broad queries) | 0.3–0.5x |
+| Repeated queries (result cache) | 0.5x |
+| Exact / prefix / fuzzy search (cold, mixed incl. broad queries) | 0.3–0.5x |
 
 Memory (`bun run bench:memory`, RSS per index on the same corpus):
 ferrosearch ≈ 6.8 MB versus ≈ 22 MB for the JS original — about 3x smaller,
 thanks to flat-vector posting lists, interned stored-field names, and
 enum-keyed document IDs instead of per-entry `Map` objects and strings.
 
-Honest summary: once the JavaScript JIT is warm, the original wins most bulk
-search scenarios, because every ferrosearch result still crosses the native
-boundary as JSON; selective queries are at parity. ferrosearch wins on
-serialization, index loading, auto-suggest, JSON-string indexing, and cold
-start (native code needs no JIT warmup). Reducing result-transfer cost is the
-main open optimization — within the constraint that results stay exactly
-MiniSearch-shaped.
+Honest summary: once the JavaScript JIT is warm, the original wins bulk
+search, because every ferrosearch result crosses the native boundary as
+JSON — even a cache hit still pays `JSON.parse` of the full result array,
+which alone exceeds a warm JS search for thousand-result queries. Selective
+queries are at parity, and everything else — indexing (both paths),
+serialization, loading, auto-suggest, cold start — is a ferrosearch win.
+Result-transfer cost is the one open problem, bounded by the constraint that
+results stay exactly MiniSearch-shaped.
 
 ## Faithfulness
 

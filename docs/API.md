@@ -20,6 +20,7 @@ new MiniSearch(options)
 | `searchOptions` | `SearchOptions` | — | Default search options (see below). |
 | `autoSuggestOptions` | `SearchOptions` | — | Default auto-suggest options. |
 | `autoVacuum` | `boolean \| { minDirtCount?, minDirtFactor? }` | `true` | Automatic vacuuming after discards. `true` uses thresholds 20 / 0.1; falsy thresholds fall back to the defaults. |
+| `cache` | `boolean` | `true` | Memoize search results per `(query, options)`, invalidated on any mutation and bypassed while discards are pending vacuum. Additive to the original. |
 
 Throws `MiniSearch: option "fields" must be provided` when `fields` is
 missing.
@@ -63,7 +64,7 @@ the constructor defaults.
 
 | Method | Description |
 | --- | --- |
-| `search(query, options?)` | Returns scored results sorted by descending score. `query` is a string or a `{ queries: [...] }` combination tree. |
+| `search(query, options?)` | Returns scored results sorted by descending score. `query` is a string, a `{ queries: [...] }` combination tree, or the `MiniSearch.wildcard` symbol. |
 | `searchJson(query, options?)` | Same, as a JSON string — pair with `JSON.parse` for the fastest path. |
 | `wildcardSearch(options?)` | Results for all documents (the original's `MiniSearch.wildcard`). |
 | `autoSuggest(query, options?)` | Ranked query suggestions. Defaults: terms combine with `AND`, prefix search on the last term. |
@@ -88,4 +89,4 @@ Each result carries `id`, `score`, `terms` (matched document terms),
 | --- | --- |
 | `toJson()` | Plain-object index representation (MiniSearch serialization version 2). `JSON.stringify` produces a MiniSearch-compatible index. |
 | `toJsonString()` | The same serialization written natively in one pass — much faster. |
-| `MiniSearch.loadJson(json, options)` | Static. Loads a serialized index (version 1 or 2, from either library). Must receive the same options used when serializing. |
+| `MiniSearch.loadJson(json, options)` | Static. Loads a serialized index (version 1 or 2, from either library). Must receive the same options used when serializing. `loadJSON` is an alias matching the original's name. |
