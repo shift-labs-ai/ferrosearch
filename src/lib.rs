@@ -2,9 +2,8 @@
 //!
 //! The exposed class mirrors the MiniSearch API. Option values that are
 //! JavaScript functions (custom tokenizers, term processors, filters, and
-//! document boosters) cannot cross the JSON boundary and are handled by the
-//! JavaScript wrapper, which pre-tokenizes or post-filters around these
-//! native calls.
+//! document boosters) cannot cross the JSON boundary and are not supported;
+//! the README documents these deltas.
 
 #![deny(clippy::all)]
 
@@ -122,8 +121,7 @@ impl MiniSearch {
 
     /// Same as `search`, returning the results as a JSON string. Crossing
     /// the native boundary once and parsing with `JSON.parse` is much faster
-    /// than materializing result objects through the bindings; the wrapper
-    /// uses this method.
+    /// than materializing result objects through the bindings.
     #[napi]
     pub fn search_json(&mut self, query: Value, options: Option<Value>) -> Result<String> {
         self.engine

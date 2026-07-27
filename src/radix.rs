@@ -79,13 +79,6 @@ impl<T> Node<T> {
             _ => unreachable!("slot was just pushed"),
         }
     }
-
-    fn child_count(&self) -> usize {
-        self.slots
-            .iter()
-            .filter(|slot| matches!(slot, Slot::Child(..)))
-            .count()
-    }
 }
 
 pub struct RadixTree<T> {
@@ -242,9 +235,9 @@ impl<T> RadixTree<T> {
         if removed && child.value().is_none() {
             if child.slots.is_empty() {
                 node.slots.remove(position);
-            } else if child.child_count() == 1 && child.slots.len() == 1 {
-                // Merge the child's single edge into this edge, appending the
-                // merged edge like the original's delete-and-set.
+            } else if matches!(child.slots.as_slice(), [Slot::Child(..)]) {
+                // A single remaining edge: merge it into this edge, appending
+                // the merged edge like the original's delete-and-set.
                 let (edge, mut collapsed) = node.take_child(position);
                 let (sub_edge, sub_node) = collapsed.take_child(0);
                 let mut merged = String::with_capacity(edge.len() + sub_edge.len());

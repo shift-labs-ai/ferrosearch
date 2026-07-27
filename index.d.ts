@@ -38,8 +38,7 @@ export declare class MiniSearch {
   /**
    * Same as `search`, returning the results as a JSON string. Crossing
    * the native boundary once and parsing with `JSON.parse` is much faster
-   * than materializing result objects through the bindings; the wrapper
-   * uses this method.
+   * than materializing result objects through the bindings.
    */
   searchJson(query: any, options?: any | undefined | null): string
   /**

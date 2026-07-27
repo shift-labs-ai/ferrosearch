@@ -65,8 +65,8 @@ Honest summary: once the JavaScript JIT is warm, the original wins most bulk
 search scenarios, because every ferrosearch result still crosses the native
 boundary as JSON. ferrosearch wins on cold start, selective queries,
 auto-suggest, and index loading. Reducing result-transfer cost is the main
-open optimization; a result-paging API would change this picture
-substantially.
+open optimization — within the constraint that results stay exactly
+MiniSearch-shaped.
 
 ## Faithfulness notes
 
