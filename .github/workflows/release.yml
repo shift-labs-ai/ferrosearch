@@ -3,11 +3,25 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 jobs:
+  check-version:
+    name: tag matches package version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match package.json version $version" >&2
+            exit 1
+          fi
+
   build:
     name: build ${{ matrix.target }}
+    needs: check-version
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -39,7 +53,6 @@ jobs:
 
   publish:
     name: publish to npm
-    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     steps:
