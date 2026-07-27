@@ -11,12 +11,12 @@ use std::sync::OnceLock;
 
 use indexmap::IndexMap;
 use regex::Regex;
-use rustc_hash::FxBuildHasher;
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use serde_json::{json, Map as JsonMap, Value};
 
 use crate::js::{
-    as_f64, id_key, js_to_string, json_number_to, json_string_to, json_value_to, shallow_merge,
-    without_key,
+    as_f64, id_key, js_text, js_to_string, json_number_to, json_string_to, json_value_to,
+    shallow_merge, without_key,
 };
 use crate::options::{
     parse_auto_vacuum, parse_combine, string_array, AutoVacuum, Bm25, Combine, Fuzzy, Prefix,
@@ -219,7 +219,16 @@ impl Engine {
         if term.is_empty() {
             return None;
         }
-        Some(term.to_lowercase())
+        // Fast path: lowercasing is the identity for ASCII text without
+        // uppercase letters, the common case for indexed prose.
+        if term
+            .bytes()
+            .all(|b| b.is_ascii() && !b.is_ascii_uppercase())
+        {
+            Some(term.to_string())
+        } else {
+            Some(term.to_lowercase())
+        }
     }
 
     /// Extracts the document ID, mirroring the original's `extractField` +
@@ -236,28 +245,29 @@ impl Engine {
 
     /// Tokenizes every indexed field of a document. Fields that are missing
     /// or null are skipped, and other values are coerced to strings with
-    /// JavaScript semantics.
+    /// JavaScript semantics. Tokens are streamed straight from the splitter:
+    /// raw tokens are counted for uniqueness while processed terms are
+    /// collected, without an intermediate token list.
     fn tokenized_fields(&self, document: &Value) -> Vec<FieldTokens> {
         self.fields
             .iter()
             .filter_map(|field| {
                 let value = document.get(field).filter(|value| !value.is_null())?;
-                let tokens = Self::tokenize(&js_to_string(value));
+                let text = js_text(value);
 
-                let unique_tokens = {
-                    let mut seen: Vec<&str> = tokens.iter().map(String::as_str).collect();
-                    seen.sort_unstable();
-                    seen.dedup();
-                    seen.len() as u32
-                };
+                let mut unique = FxHashSet::default();
+                let mut terms = Vec::new();
+                for token in tokenizer().split(&text) {
+                    unique.insert(token);
+                    if let Some(term) = Self::process_term(token) {
+                        terms.push(term);
+                    }
+                }
 
                 Some(FieldTokens {
                     field_id: self.field_ids[field],
-                    unique_tokens,
-                    terms: tokens
-                        .iter()
-                        .filter_map(|token| Self::process_term(token))
-                        .collect(),
+                    unique_tokens: unique.len() as u32,
+                    terms,
                 })
             })
             .collect()
@@ -297,6 +307,15 @@ impl Engine {
             self.add(document)?;
         }
         Ok(())
+    }
+
+    /// Adds all documents from a JSON array string. Parsing in native code is
+    /// much cheaper than converting an array of JavaScript objects through
+    /// the bindings.
+    pub fn add_all_json(&mut self, json_text: &str) -> Result<()> {
+        let documents: Vec<Value> = serde_json::from_str(json_text)
+            .map_err(|error| format!("MiniSearch: invalid JSON documents: {error}"))?;
+        self.add_all(&documents)
     }
 
     pub fn remove(&mut self, document: &Value) -> Result<()> {
@@ -1107,6 +1126,114 @@ impl Engine {
             "index": index_entries,
             "serializationVersion": SERIALIZATION_VERSION,
         })
+    }
+
+    /// Serializes the index directly to a JSON string, equivalent to
+    /// `JSON.stringify` of `to_json` but without materializing value trees
+    /// or crossing the bindings with nested objects.
+    pub fn to_json_string(&self) -> String {
+        let mut out = String::with_capacity(4096);
+        out.push_str("{\"documentCount\":");
+        out.push_str(&self.document_count.to_string());
+        out.push_str(",\"nextId\":");
+        out.push_str(&self.next_id.to_string());
+
+        out.push_str(",\"documentIds\":{");
+        for (position, (short_id, id)) in self.document_ids.iter().enumerate() {
+            if position > 0 {
+                out.push(',');
+            }
+            json_string_to(&mut out, &short_id.to_string());
+            out.push(':');
+            json_value_to(&mut out, id);
+        }
+
+        out.push_str("},\"fieldIds\":{");
+        for (position, (field, id)) in self.field_ids.iter().enumerate() {
+            if position > 0 {
+                out.push(',');
+            }
+            json_string_to(&mut out, field);
+            out.push(':');
+            out.push_str(&id.to_string());
+        }
+
+        out.push_str("},\"fieldLength\":{");
+        for (position, (short_id, lengths)) in self.field_length.iter().enumerate() {
+            if position > 0 {
+                out.push(',');
+            }
+            json_string_to(&mut out, &short_id.to_string());
+            out.push_str(":[");
+            for (length_position, length) in lengths.iter().enumerate() {
+                if length_position > 0 {
+                    out.push(',');
+                }
+                match length {
+                    Some(length) => out.push_str(&length.to_string()),
+                    None => out.push_str("null"),
+                }
+            }
+            out.push(']');
+        }
+
+        out.push_str("},\"averageFieldLength\":[");
+        for (position, average) in self.avg_field_length.iter().enumerate() {
+            if position > 0 {
+                out.push(',');
+            }
+            match average {
+                Some(average) => json_number_to(&mut out, *average),
+                None => out.push_str("null"),
+            }
+        }
+
+        out.push_str("],\"storedFields\":{");
+        for (position, (short_id, fields)) in self.stored_fields.iter().enumerate() {
+            if position > 0 {
+                out.push(',');
+            }
+            json_string_to(&mut out, &short_id.to_string());
+            out.push(':');
+            json_value_to(&mut out, fields);
+        }
+
+        out.push_str("},\"dirtCount\":");
+        out.push_str(&self.dirt_count.to_string());
+
+        out.push_str(",\"index\":[");
+        let mut first_term = true;
+        self.index.for_each(&mut |term, fields_data| {
+            if !first_term {
+                out.push(',');
+            }
+            first_term = false;
+            out.push('[');
+            json_string_to(&mut out, term);
+            out.push_str(",{");
+            for (field_position, (field_id, doc_freqs)) in fields_data.iter().enumerate() {
+                if field_position > 0 {
+                    out.push(',');
+                }
+                json_string_to(&mut out, &field_id.to_string());
+                out.push_str(":{");
+                for (doc_position, (doc_id, freq)) in doc_freqs.iter().enumerate() {
+                    if doc_position > 0 {
+                        out.push(',');
+                    }
+                    json_string_to(&mut out, &doc_id.to_string());
+                    out.push(':');
+                    out.push_str(&freq.to_string());
+                }
+                out.push('}');
+            }
+            out.push_str("}]");
+        });
+
+        out.push_str("],\"serializationVersion\":");
+        out.push_str(&SERIALIZATION_VERSION.to_string());
+        out.push('}');
+        out
     }
 
     pub fn load_json(json_text: &str, options: &Value) -> Result<Engine> {

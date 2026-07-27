@@ -22,11 +22,13 @@ miniSearch.addAll(documents);
 const results = miniSearch.search("zen art motorcycle", { prefix: true, fuzzy: 0.2 });
 ```
 
-The fast path returns results as a JSON string, which avoids materializing
-result objects through the native bindings:
+JSON-string fast paths avoid materializing objects through the native
+bindings, in both directions:
 
 ```js
 const results = JSON.parse(miniSearch.searchJson("zen art motorcycle"));
+miniSearch.addAllJson(jsonArrayOfDocuments);
+const serialized = miniSearch.toJsonString();
 ```
 
 ## API differences from MiniSearch
@@ -54,12 +56,13 @@ Bun 1.3, Apple Silicon, with warmup:
 
 | Benchmark | Speedup vs JS |
 | --- | --- |
-| Auto suggestion | 1.7x |
+| Serialize index (`toJsonString`) | 4.7x |
 | Load serialized index | 2.1x |
+| Auto suggestion | 1.6x |
+| Indexing from a JSON string (`addAllJson`) | 1.2x |
 | Queries with few or no results | 1.8–4x |
-| Indexing | 0.9x |
+| Indexing from JavaScript objects | 0.9x |
 | Exact / prefix / fuzzy search (mixed, incl. broad queries) | 0.3–0.5x |
-| Serialize index | 0.4x |
 
 Honest summary: once the JavaScript JIT is warm, the original wins most bulk
 search scenarios, because every ferrosearch result still crosses the native

@@ -490,6 +490,25 @@ describe("serialization equivalence", () => {
     expect(rust.documentCount).toBe(8);
   });
 
+  test("addAllJson is equivalent to addAll", () => {
+    const { js, rust } = buildBoth();
+    const fromJson = new MiniSearch(options);
+    fromJson.addAllJson(JSON.stringify(books));
+    expectSameIndex(js, fromJson);
+    expectSameSearch(js, fromJson, "zen art motorcycle", { prefix: true, fuzzy: 0.2 });
+    expect(() => fromJson.addAllJson("not json")).toThrow("MiniSearch: invalid JSON documents");
+    expect(rust.documentCount).toBe(fromJson.documentCount);
+  });
+
+  test("toJsonString equals JSON.stringify of toJson and loads everywhere", () => {
+    const { js, rust } = buildBoth(oddDocuments, { fields: ["title", "text"], storeFields: ["title"] });
+    expectEquivalent(JSON.parse(rust.toJsonString()), rust.toJson());
+    const jsLoaded = JsMiniSearch.loadJSON(rust.toJsonString(), { fields: ["title", "text"], storeFields: ["title"] });
+    expectEquivalent(jsLoaded.search("the"), js.search("the"));
+    const rustLoaded = MiniSearch.loadJson(rust.toJsonString(), { fields: ["title", "text"], storeFields: ["title"] });
+    expectEquivalent(rustLoaded.search("the"), js.search("the"));
+  });
+
   test("version 1 index format loads", () => {
     const { js } = buildBoth();
     const plain = JSON.parse(JSON.stringify(js));

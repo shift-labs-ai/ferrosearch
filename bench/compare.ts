@@ -51,6 +51,13 @@ compare(
   () => new MiniSearch(options).addAll(corpus),
 );
 
+const corpusJson = JSON.stringify(corpus);
+compare(
+  "indexing from JSON string",
+  () => new JsMiniSearch(options).addAll(JSON.parse(corpusJson)),
+  () => new MiniSearch(options).addAllJson(corpusJson),
+);
+
 const js = new JsMiniSearch(options);
 js.addAll(corpus);
 const rust = new MiniSearch(options);
@@ -92,7 +99,7 @@ const serialized = JSON.stringify(js);
 compare(
   "serialize index",
   () => JSON.stringify(js),
-  () => JSON.stringify(rust.toJson()),
+  () => rust.toJsonString(),
 );
 compare(
   "load serialized index",

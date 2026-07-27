@@ -12,6 +12,12 @@ export declare class MiniSearch {
   static loadJson(json: string, options: any): MiniSearch
   add(document: any): void
   addAll(documents: Array<any>): void
+  /**
+   * Adds all documents from a JSON array string. Parsing in native code
+   * is much cheaper than converting an array of JavaScript objects
+   * through the bindings.
+   */
+  addAllJson(documents: string): void
   remove(document: any): void
   /**
    * Removes the given documents. When called without arguments, removes
@@ -52,4 +58,10 @@ export declare class MiniSearch {
   get dirtCount(): number
   get dirtFactor(): number
   toJson(): any
+  /**
+   * Serializes the index to a JSON string, equivalent to
+   * `JSON.stringify` of `toJson` but much faster: the JSON is written in
+   * a single native pass.
+   */
+  toJsonString(): string
 }

@@ -53,6 +53,14 @@ impl MiniSearch {
         self.engine.add_all(&documents).map_err(reason)
     }
 
+    /// Adds all documents from a JSON array string. Parsing in native code
+    /// is much cheaper than converting an array of JavaScript objects
+    /// through the bindings.
+    #[napi]
+    pub fn add_all_json(&mut self, documents: String) -> Result<()> {
+        self.engine.add_all_json(&documents).map_err(reason)
+    }
+
     #[napi]
     pub fn remove(&mut self, document: Value) -> Result<()> {
         self.engine.remove(&document).map_err(reason)
@@ -168,5 +176,13 @@ impl MiniSearch {
     #[napi]
     pub fn to_json(&self) -> Value {
         self.engine.to_json()
+    }
+
+    /// Serializes the index to a JSON string, equivalent to
+    /// `JSON.stringify` of `toJson` but much faster: the JSON is written in
+    /// a single native pass.
+    #[napi]
+    pub fn to_json_string(&self) -> String {
+        self.engine.to_json_string()
     }
 }

@@ -1,10 +1,22 @@
 //! JavaScript-semantics helpers: string coercion, document-ID identity, and
 //! JSON writing that matches `JSON.stringify` output.
 
+use std::borrow::Cow;
+
+use serde::Serialize;
 use serde_json::{Map as JsonMap, Number, Value};
 
 pub fn as_f64(value: &Value) -> Option<f64> {
     value.as_f64()
+}
+
+/// Like `js_to_string`, but borrows when the value is already a string —
+/// the common case for document fields.
+pub fn js_text(value: &Value) -> Cow<'_, str> {
+    match value {
+        Value::String(s) => Cow::Borrowed(s),
+        other => Cow::Owned(js_to_string(other)),
+    }
 }
 
 /// Renders a JSON value the way JavaScript's string coercion would, for use
@@ -87,7 +99,7 @@ pub fn json_number_to(out: &mut String, value: f64) {
     }
 }
 
-pub fn json_value_to(out: &mut String, value: &Value) {
+pub fn json_value_to(out: &mut String, value: &impl Serialize) {
     match serde_json::to_string(value) {
         Ok(text) => out.push_str(&text),
         Err(_) => out.push_str("null"),

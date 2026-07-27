@@ -15,6 +15,7 @@ napi = { version = "2", default-features = false, features = ["napi8", "serde-js
 napi-derive = "2"
 regex = "1"
 rustc-hash = "2"
+serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [build-dependencies]
