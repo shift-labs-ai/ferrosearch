@@ -12,7 +12,10 @@
       "optionalDependencies": {
         "@shift-labs/ferrosearch-darwin-arm64": "0.1.0",
         "@shift-labs/ferrosearch-darwin-x64": "0.1.0",
+        "@shift-labs/ferrosearch-linux-arm64-gnu": "0.1.0",
+        "@shift-labs/ferrosearch-linux-arm64-musl": "0.1.0",
         "@shift-labs/ferrosearch-linux-x64-gnu": "0.1.0",
+        "@shift-labs/ferrosearch-linux-x64-musl": "0.1.0",
       },
     },
   },
