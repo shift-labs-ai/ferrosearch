@@ -47,6 +47,39 @@ impl<T> Node<T> {
         })
     }
 
+    /// The edge and child at a position returned by `child_position`.
+    fn child_at(&self, position: usize) -> (&str, &Node<T>) {
+        match &self.slots[position] {
+            Slot::Child(edge, child) => (edge, child),
+            Slot::Leaf(_) => unreachable!("child_position only returns child slots"),
+        }
+    }
+
+    fn child_at_mut(&mut self, position: usize) -> (&str, &mut Node<T>) {
+        match &mut self.slots[position] {
+            Slot::Child(edge, child) => (edge, child),
+            Slot::Leaf(_) => unreachable!("child_position only returns child slots"),
+        }
+    }
+
+    /// Removes the child slot at a position returned by `child_position` and
+    /// returns its edge and subtree.
+    fn take_child(&mut self, position: usize) -> (Box<str>, Node<T>) {
+        match self.slots.remove(position) {
+            Slot::Child(edge, child) => (edge, child),
+            Slot::Leaf(_) => unreachable!("child_position only returns child slots"),
+        }
+    }
+
+    /// Appends a child slot and returns a mutable reference to its node.
+    fn push_child(&mut self, edge: Box<str>, child: Node<T>) -> &mut Node<T> {
+        self.slots.push(Slot::Child(edge, child));
+        match self.slots.last_mut() {
+            Some(Slot::Child(_, child)) => child,
+            _ => unreachable!("slot was just pushed"),
+        }
+    }
+
     fn child_count(&self) -> usize {
         self.slots
             .iter()
@@ -95,9 +128,7 @@ impl<T> RadixTree<T> {
         let mut rest = key;
         while !rest.is_empty() {
             let position = node.child_position(|edge| rest.starts_with(edge))?;
-            let Slot::Child(edge, child) = &node.slots[position] else {
-                unreachable!("child_position only returns child slots");
-            };
+            let (edge, child) = node.child_at(position);
             rest = &rest[edge.len()..];
             node = child;
         }
@@ -108,18 +139,12 @@ impl<T> RadixTree<T> {
         self.lookup(key).and_then(Node::value)
     }
 
-    pub fn has(&self, key: &str) -> bool {
-        self.get(key).is_some()
-    }
-
     pub fn get_mut(&mut self, key: &str) -> Option<&mut T> {
         let mut node = &mut self.root;
         let mut rest = key;
         while !rest.is_empty() {
             let position = node.child_position(|edge| rest.starts_with(edge))?;
-            let Slot::Child(edge, child) = &mut node.slots[position] else {
-                unreachable!("child_position only returns child slots");
-            };
+            let (edge, child) = node.child_at_mut(position);
             rest = &rest[edge.len()..];
             node = child;
         }
@@ -163,41 +188,23 @@ impl<T> RadixTree<T> {
             let candidate = node.child_position(|edge| edge.starts_with(first));
 
             let Some(position) = candidate else {
-                node.slots.push(Slot::Child(rest.into(), Node::default()));
-                let Some(Slot::Child(_, child)) = node.slots.last_mut() else {
-                    unreachable!("slot was just pushed");
-                };
-                return child;
+                return node.push_child(rest.into(), Node::default());
             };
 
-            let Slot::Child(edge, _) = &node.slots[position] else {
-                unreachable!("child_position only returns child slots");
-            };
+            let (edge, _) = node.child_at(position);
             let common = common_prefix_len(rest, edge);
             let full_match = common == edge.len();
 
             if full_match {
                 // The existing edge is fully contained in the key: descend.
-                let Slot::Child(_, child) = &mut node.slots[position] else {
-                    unreachable!("checked above");
-                };
-                node = child;
+                node = node.child_at_mut(position).1;
             } else {
                 // Partial match: split the edge with an intermediate node
                 // holding the existing subtree under the non-matching suffix.
-                let Slot::Child(old_edge, old_child) = node.slots.remove(position) else {
-                    unreachable!("checked above");
-                };
+                let (old_edge, old_child) = node.take_child(position);
                 let mut intermediate = Node::default();
-                intermediate
-                    .slots
-                    .push(Slot::Child(old_edge[common..].into(), old_child));
-                node.slots
-                    .push(Slot::Child(rest[..common].into(), intermediate));
-                let Some(Slot::Child(_, child)) = node.slots.last_mut() else {
-                    unreachable!("slot was just pushed");
-                };
-                node = child;
+                intermediate.push_child(old_edge[common..].into(), old_child);
+                node = node.push_child(rest[..common].into(), intermediate);
             }
             pos += common;
         }
@@ -229,9 +236,7 @@ impl<T> RadixTree<T> {
         let Some(position) = node.child_position(|edge| key.starts_with(edge)) else {
             return false;
         };
-        let Slot::Child(edge, child) = &mut node.slots[position] else {
-            unreachable!("child_position only returns child slots");
-        };
+        let (edge, child) = node.child_at_mut(position);
         let edge_len = edge.len();
         let removed = Self::remove_rec(child, &key[edge_len..]);
         if removed && child.value().is_none() {
@@ -240,17 +245,12 @@ impl<T> RadixTree<T> {
             } else if child.child_count() == 1 && child.slots.len() == 1 {
                 // Merge the child's single edge into this edge, appending the
                 // merged edge like the original's delete-and-set.
-                let Slot::Child(edge, mut collapsed) = node.slots.remove(position) else {
-                    unreachable!("checked above");
-                };
-                let Some(Slot::Child(sub_edge, sub_node)) = collapsed.slots.pop() else {
-                    unreachable!("single child slot checked above");
-                };
+                let (edge, mut collapsed) = node.take_child(position);
+                let (sub_edge, sub_node) = collapsed.take_child(0);
                 let mut merged = String::with_capacity(edge.len() + sub_edge.len());
                 merged.push_str(&edge);
                 merged.push_str(&sub_edge);
-                node.slots
-                    .push(Slot::Child(merged.into_boxed_str(), sub_node));
+                node.push_child(merged.into_boxed_str(), sub_node);
             }
         }
         removed

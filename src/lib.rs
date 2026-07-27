@@ -9,6 +9,8 @@
 #![deny(clippy::all)]
 
 mod engine;
+mod js;
+mod options;
 mod radix;
 
 use napi::bindgen_prelude::*;

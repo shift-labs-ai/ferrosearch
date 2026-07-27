@@ -12,11 +12,17 @@ use std::sync::OnceLock;
 use indexmap::IndexMap;
 use regex::Regex;
 use rustc_hash::FxBuildHasher;
-use serde_json::{json, Map as JsonMap, Number, Value};
+use serde_json::{json, Map as JsonMap, Value};
 
+use crate::js::{
+    as_f64, id_key, js_to_string, json_number_to, json_string_to, json_value_to, shallow_merge,
+    without_key,
+};
+use crate::options::{
+    parse_auto_vacuum, parse_combine, string_array, AutoVacuum, Bm25, Combine, Fuzzy, Prefix,
+    Result, SearchOptions,
+};
 use crate::radix::RadixTree;
-
-pub type Result<T> = std::result::Result<T, String>;
 
 /// Insertion-ordered map with a fast non-cryptographic hasher, used for all
 /// integer-keyed internal maps.
@@ -32,223 +38,6 @@ const SERIALIZATION_VERSION: u64 = 2;
 fn tokenizer() -> &'static Regex {
     static TOKENIZER: OnceLock<Regex> = OnceLock::new();
     TOKENIZER.get_or_init(|| Regex::new(r"[\n\r\p{Z}\p{P}]+").expect("valid pattern"))
-}
-
-#[derive(Clone, Copy)]
-pub struct Bm25 {
-    pub k: f64,
-    pub b: f64,
-    pub d: f64,
-}
-
-const DEFAULT_BM25: Bm25 = Bm25 {
-    k: 1.2,
-    b: 0.7,
-    d: 0.5,
-};
-
-#[derive(Clone, Copy)]
-pub struct Weights {
-    pub fuzzy: f64,
-    pub prefix: f64,
-}
-
-const DEFAULT_WEIGHTS: Weights = Weights {
-    fuzzy: 0.45,
-    prefix: 0.375,
-};
-
-#[derive(Clone, Copy)]
-pub enum Prefix {
-    Enabled(bool),
-    /// Prefix search only on the last query term: the default for
-    /// auto-suggestions.
-    LastTerm,
-}
-
-#[derive(Clone, Copy)]
-pub enum Fuzzy {
-    Off,
-    /// `fuzzy: true`: a fraction of 0.2 of the term length.
-    Auto,
-    /// A number: below 1 it is a fraction of the term length, otherwise a
-    /// maximum edit distance.
-    Value(f64),
-}
-
-#[derive(Clone, Copy)]
-pub enum Combine {
-    Or,
-    And,
-    AndNot,
-}
-
-#[derive(Clone)]
-pub struct SearchOptions {
-    pub fields: Option<Vec<String>>,
-    pub boost: IndexMap<String, f64>,
-    pub weights: Weights,
-    pub prefix: Prefix,
-    pub fuzzy: Fuzzy,
-    pub max_fuzzy: f64,
-    pub combine_with: Combine,
-    pub bm25: Bm25,
-}
-
-impl Default for SearchOptions {
-    fn default() -> Self {
-        SearchOptions {
-            fields: None,
-            boost: IndexMap::new(),
-            weights: DEFAULT_WEIGHTS,
-            prefix: Prefix::Enabled(false),
-            fuzzy: Fuzzy::Off,
-            max_fuzzy: 6.0,
-            combine_with: Combine::Or,
-            bm25: DEFAULT_BM25,
-        }
-    }
-}
-
-fn as_f64(value: &Value) -> Option<f64> {
-    value.as_f64()
-}
-
-impl SearchOptions {
-    /// Applies the recognized keys of a plain-object overlay, mirroring the
-    /// shallow object spreads used by MiniSearch when merging option layers.
-    fn overlay(&self, overlay: &Value) -> Result<SearchOptions> {
-        let mut options = self.clone();
-        let Some(object) = overlay.as_object() else {
-            return Ok(options);
-        };
-
-        if let Some(fields) = object.get("fields") {
-            options.fields = Some(string_array(fields, "fields")?);
-        }
-        if let Some(boost) = object.get("boost").and_then(Value::as_object) {
-            let mut boosts = IndexMap::new();
-            for (field, factor) in boost {
-                if let Some(factor) = as_f64(factor) {
-                    boosts.insert(field.clone(), factor);
-                }
-            }
-            options.boost = boosts;
-        }
-        if let Some(weights) = object.get("weights").and_then(Value::as_object) {
-            if let Some(fuzzy) = weights.get("fuzzy").and_then(as_f64) {
-                options.weights.fuzzy = fuzzy;
-            }
-            if let Some(prefix) = weights.get("prefix").and_then(as_f64) {
-                options.weights.prefix = prefix;
-            }
-        }
-        if let Some(prefix) = object.get("prefix") {
-            if let Some(enabled) = prefix.as_bool() {
-                options.prefix = Prefix::Enabled(enabled);
-            }
-        }
-        if let Some(fuzzy) = object.get("fuzzy") {
-            options.fuzzy = match fuzzy {
-                Value::Bool(true) => Fuzzy::Auto,
-                Value::Bool(false) => Fuzzy::Off,
-                Value::Number(_) => Fuzzy::Value(as_f64(fuzzy).expect("checked number")),
-                _ => options.fuzzy,
-            };
-        }
-        if let Some(max_fuzzy) = object.get("maxFuzzy").and_then(as_f64) {
-            options.max_fuzzy = max_fuzzy;
-        }
-        if let Some(combine) = object.get("combineWith") {
-            options.combine_with = parse_combine(combine)?;
-        }
-        if let Some(bm25) = object.get("bm25").and_then(Value::as_object) {
-            // A bm25 overlay replaces the whole parameter object, like the
-            // original's shallow spread. Missing keys become NaN, matching
-            // the undefined arithmetic of the original; NaN scores surface
-            // as null through JSON, like `JSON.stringify(NaN)`.
-            options.bm25 = Bm25 {
-                k: bm25.get("k").and_then(as_f64).unwrap_or(f64::NAN),
-                b: bm25.get("b").and_then(as_f64).unwrap_or(f64::NAN),
-                d: bm25.get("d").and_then(as_f64).unwrap_or(f64::NAN),
-            };
-        }
-        Ok(options)
-    }
-}
-
-fn parse_combine(value: &Value) -> Result<Combine> {
-    let Some(text) = value.as_str() else {
-        return Err(format!(
-            "Invalid combination operator: {}",
-            js_to_string(value)
-        ));
-    };
-    match text.to_lowercase().as_str() {
-        "or" => Ok(Combine::Or),
-        "and" => Ok(Combine::And),
-        "and_not" => Ok(Combine::AndNot),
-        _ => Err(format!("Invalid combination operator: {text}")),
-    }
-}
-
-fn string_array(value: &Value, name: &str) -> Result<Vec<String>> {
-    let Some(items) = value.as_array() else {
-        return Err(format!(
-            "MiniSearch: option \"{name}\" must be an array of strings"
-        ));
-    };
-    let mut result = Vec::with_capacity(items.len());
-    for item in items {
-        let Some(text) = item.as_str() else {
-            return Err(format!(
-                "MiniSearch: option \"{name}\" must be an array of strings"
-            ));
-        };
-        result.push(text.to_string());
-    }
-    Ok(result)
-}
-
-/// Renders a JSON value the way JavaScript's string coercion would, for use in
-/// error messages and default field stringification.
-fn js_to_string(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => js_number_string(n),
-        Value::String(s) => s.clone(),
-        Value::Array(items) => items.iter().map(js_to_string).collect::<Vec<_>>().join(","),
-        Value::Object(_) => "[object Object]".to_string(),
-    }
-}
-
-fn js_number_string(number: &Number) -> String {
-    if let Some(f) = number.as_f64() {
-        if f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 {
-            return format!("{}", f as i64);
-        }
-    }
-    number.to_string()
-}
-
-/// A stable identity key for a document ID value. JavaScript distinguishes the
-/// number `1` from the string `"1"`, so keys are namespaced by type.
-fn id_key(id: &Value) -> String {
-    match id {
-        Value::String(s) => format!("s:{s}"),
-        Value::Number(n) => format!("n:{}", js_number_string(n)),
-        Value::Bool(b) => format!("b:{b}"),
-        Value::Null => "null".to_string(),
-        other => format!("j:{other}"),
-    }
-}
-
-struct QuerySpec {
-    term: String,
-    prefix: bool,
-    fuzzy: Fuzzy,
-    term_boost: f64,
 }
 
 /// Interns the small set of terms touched by one query execution, so that
@@ -324,15 +113,26 @@ struct Hit {
     matches: Vec<(u16, Vec<u32>)>,
 }
 
-struct AutoVacuum {
-    min_dirt_count: u32,
-    min_dirt_factor: f64,
+/// The processed content of one document field, shared by indexing and
+/// removal.
+struct FieldTokens {
+    field_id: u32,
+    /// Number of unique raw tokens, counted before term processing, exactly
+    /// like the original's `new Set(tokens).size`.
+    unique_tokens: u32,
+    /// Tokens after term processing; empty tokens are dropped.
+    terms: Vec<String>,
 }
 
-const DEFAULT_AUTO_VACUUM: AutoVacuum = AutoVacuum {
-    min_dirt_count: 20,
-    min_dirt_factor: 0.1,
-};
+/// Per-query-term scoring inputs shared by the exact, prefix, and fuzzy
+/// passes of `execute_query_spec`.
+struct Scoring<'a> {
+    source_term: u16,
+    /// `(field name, boost)` pairs in search-field order. A falsy boost (0)
+    /// has already been replaced by 1.
+    field_boosts: &'a [(String, f64)],
+    bm25: Bm25,
+}
 
 pub struct Engine {
     fields: Vec<String>,
@@ -383,31 +183,11 @@ impl Engine {
         let default_auto_suggest =
             auto_suggest_base.overlay(object.get("autoSuggestOptions").unwrap_or(&Value::Null))?;
 
-        let auto_vacuum = match object.get("autoVacuum") {
-            None | Some(Value::Null) | Some(Value::Bool(true)) => Some(DEFAULT_AUTO_VACUUM),
-            Some(Value::Bool(false)) => None,
-            // Falsy thresholds (0) fall back to the defaults, matching the
-            // original's `minDirtCount || defaultAutoVacuumOptions.minDirtCount`.
-            Some(Value::Object(settings)) => Some(AutoVacuum {
-                min_dirt_count: settings
-                    .get("minDirtCount")
-                    .and_then(as_f64)
-                    .map(|value| value as u32)
-                    .filter(|&value| value != 0)
-                    .unwrap_or(DEFAULT_AUTO_VACUUM.min_dirt_count),
-                min_dirt_factor: settings
-                    .get("minDirtFactor")
-                    .and_then(as_f64)
-                    .filter(|&value| value != 0.0)
-                    .unwrap_or(DEFAULT_AUTO_VACUUM.min_dirt_factor),
-            }),
-            Some(_) => Some(DEFAULT_AUTO_VACUUM),
-        };
-
-        let mut field_ids = IndexMap::new();
-        for (index, field) in fields.iter().enumerate() {
-            field_ids.insert(field.clone(), index as u32);
-        }
+        let field_ids = fields
+            .iter()
+            .enumerate()
+            .map(|(position, field)| (field.clone(), position as u32))
+            .collect();
 
         Ok(Engine {
             fields,
@@ -416,7 +196,7 @@ impl Engine {
             id_field,
             default_search,
             default_auto_suggest,
-            auto_vacuum,
+            auto_vacuum: parse_auto_vacuum(object.get("autoVacuum")),
             index: RadixTree::new(),
             document_count: 0,
             document_ids: FxIndexMap::default(),
@@ -431,10 +211,6 @@ impl Engine {
 
     // -- Indexing ------------------------------------------------------------
 
-    fn extract_field<'a>(document: &'a Value, field: &str) -> Option<&'a Value> {
-        document.get(field).filter(|value| !value.is_null())
-    }
-
     fn tokenize(text: &str) -> Vec<String> {
         tokenizer().split(text).map(str::to_string).collect()
     }
@@ -446,16 +222,49 @@ impl Engine {
         Some(term.to_lowercase())
     }
 
+    /// Extracts the document ID, mirroring the original's `extractField` +
+    /// null check.
+    fn document_id(&self, document: &Value) -> Result<Value> {
+        match document.get(&self.id_field) {
+            Some(value) if !value.is_null() => Ok(value.clone()),
+            _ => Err(format!(
+                "MiniSearch: document does not have ID field \"{}\"",
+                self.id_field
+            )),
+        }
+    }
+
+    /// Tokenizes every indexed field of a document. Fields that are missing
+    /// or null are skipped, and other values are coerced to strings with
+    /// JavaScript semantics.
+    fn tokenized_fields(&self, document: &Value) -> Vec<FieldTokens> {
+        self.fields
+            .iter()
+            .filter_map(|field| {
+                let value = document.get(field).filter(|value| !value.is_null())?;
+                let tokens = Self::tokenize(&js_to_string(value));
+
+                let unique_tokens = {
+                    let mut seen: Vec<&str> = tokens.iter().map(String::as_str).collect();
+                    seen.sort_unstable();
+                    seen.dedup();
+                    seen.len() as u32
+                };
+
+                Some(FieldTokens {
+                    field_id: self.field_ids[field],
+                    unique_tokens,
+                    terms: tokens
+                        .iter()
+                        .filter_map(|token| Self::process_term(token))
+                        .collect(),
+                })
+            })
+            .collect()
+    }
+
     pub fn add(&mut self, document: &Value) -> Result<()> {
-        let id = match document.get(&self.id_field) {
-            Some(value) if !value.is_null() => value.clone(),
-            _ => {
-                return Err(format!(
-                    "MiniSearch: document does not have ID field \"{}\"",
-                    self.id_field
-                ))
-            }
-        };
+        let id = self.document_id(document)?;
         let key = id_key(&id);
         if self.id_to_short.contains_key(&key) {
             return Err(format!("MiniSearch: duplicate ID {}", js_to_string(&id)));
@@ -469,27 +278,15 @@ impl Engine {
 
         self.save_stored_fields(short_id, document);
 
-        for field_position in 0..self.fields.len() {
-            let field = self.fields[field_position].clone();
-            let Some(field_value) = Self::extract_field(document, &field) else {
-                continue;
-            };
-            let text = js_to_string(field_value);
-            let tokens = Self::tokenize(&text);
-            let field_id = self.field_ids[&field];
-
-            let unique_terms = {
-                let mut seen: Vec<&str> = tokens.iter().map(String::as_str).collect();
-                seen.sort_unstable();
-                seen.dedup();
-                seen.len() as u32
-            };
-            self.add_field_length(short_id, field_id, self.document_count - 1, unique_terms);
-
-            for token in &tokens {
-                if let Some(term) = Self::process_term(token) {
-                    self.add_term(field_id, short_id, &term);
-                }
+        for field in self.tokenized_fields(document) {
+            self.add_field_length(
+                short_id,
+                field.field_id,
+                self.document_count - 1,
+                field.unique_tokens,
+            );
+            for term in &field.terms {
+                self.add_term(field.field_id, short_id, term);
             }
         }
         Ok(())
@@ -503,15 +300,7 @@ impl Engine {
     }
 
     pub fn remove(&mut self, document: &Value) -> Result<()> {
-        let id = match document.get(&self.id_field) {
-            Some(value) if !value.is_null() => value.clone(),
-            _ => {
-                return Err(format!(
-                    "MiniSearch: document does not have ID field \"{}\"",
-                    self.id_field
-                ))
-            }
-        };
+        let id = self.document_id(document)?;
         let key = id_key(&id);
         let Some(&short_id) = self.id_to_short.get(&key) else {
             return Err(format!(
@@ -520,27 +309,10 @@ impl Engine {
             ));
         };
 
-        for field_position in 0..self.fields.len() {
-            let field = self.fields[field_position].clone();
-            let Some(field_value) = Self::extract_field(document, &field) else {
-                continue;
-            };
-            let text = js_to_string(field_value);
-            let tokens = Self::tokenize(&text);
-            let field_id = self.field_ids[&field];
-
-            let unique_terms = {
-                let mut seen: Vec<&str> = tokens.iter().map(String::as_str).collect();
-                seen.sort_unstable();
-                seen.dedup();
-                seen.len() as u32
-            };
-            self.remove_field_length(field_id, self.document_count, unique_terms);
-
-            for token in &tokens {
-                if let Some(term) = Self::process_term(token) {
-                    self.remove_term(field_id, short_id, &term);
-                }
+        for field in self.tokenized_fields(document) {
+            self.remove_field_length(field.field_id, self.document_count, field.unique_tokens);
+            for term in &field.terms {
+                self.remove_term(field.field_id, short_id, term);
             }
         }
 
@@ -576,14 +348,13 @@ impl Engine {
         self.document_ids.shift_remove(&short_id);
         self.stored_fields.shift_remove(&short_id);
 
-        if let Some(lengths) = self.field_length.get(&short_id).cloned() {
-            for (field_id, length) in lengths.iter().enumerate() {
+        if let Some(lengths) = self.field_length.shift_remove(&short_id) {
+            for (position, length) in lengths.into_iter().enumerate() {
                 if let Some(length) = length {
-                    self.remove_field_length(field_id as u32, self.document_count, *length);
+                    self.remove_field_length(position as u32, self.document_count, length);
                 }
             }
         }
-        self.field_length.shift_remove(&short_id);
 
         self.document_count -= 1;
         self.dirt_count += 1;
@@ -640,20 +411,21 @@ impl Engine {
         });
 
         for (term, refs) in stale {
-            if let Some(fields_data) = self.index.get_mut(&term) {
-                for (field_id, doc_id) in refs {
-                    let remove_field = fields_data
-                        .get(&field_id)
-                        .is_some_and(|doc_freqs| doc_freqs.len() <= 1);
-                    if remove_field {
-                        fields_data.shift_remove(&field_id);
-                    } else if let Some(doc_freqs) = fields_data.get_mut(&field_id) {
-                        doc_freqs.shift_remove(&doc_id);
-                    }
+            let Some(fields_data) = self.index.get_mut(&term) else {
+                continue;
+            };
+            for (field_id, doc_id) in refs {
+                let remove_field = fields_data
+                    .get(&field_id)
+                    .is_some_and(|doc_freqs| doc_freqs.len() <= 1);
+                if remove_field {
+                    fields_data.shift_remove(&field_id);
+                } else if let Some(doc_freqs) = fields_data.get_mut(&field_id) {
+                    doc_freqs.shift_remove(&doc_id);
                 }
-                if fields_data.is_empty() {
-                    self.index.remove(&term);
-                }
+            }
+            if fields_data.is_empty() {
+                self.index.remove(&term);
             }
         }
 
@@ -689,28 +461,34 @@ impl Engine {
 
     fn add_term(&mut self, field_id: u32, document_id: u32, term: &str) {
         let index_data = self.index.fetch_with(term, FieldTermData::default);
-        let field_index = index_data.entry(field_id).or_default();
-        let freq = field_index.entry(document_id).or_insert(0);
+        let freq = index_data
+            .entry(field_id)
+            .or_default()
+            .entry(document_id)
+            .or_insert(0);
         *freq += 1;
     }
 
+    /// Removes one reference to `term` for the given document and field. A
+    /// term frequency above one is only decremented, exactly like the
+    /// original. Warns and leaves the index unchanged when the reference is
+    /// absent, which indicates the document changed before removal.
     fn remove_term(&mut self, field_id: u32, document_id: u32, term: &str) {
-        if !self.index.has(term) {
-            self.warn_document_changed(document_id, field_id, term);
-            return;
-        }
         let Some(index_data) = self.index.get_mut(term) else {
+            self.warn_document_changed(document_id, field_id, term);
             return;
         };
 
         let freq = index_data
             .get(&field_id)
-            .and_then(|field_index| field_index.get(&document_id));
+            .and_then(|field_index| field_index.get(&document_id))
+            .copied();
         match freq {
             None => {
                 self.warn_document_changed(document_id, field_id, term);
+                return;
             }
-            Some(&freq) if freq <= 1 => {
+            Some(freq) if freq <= 1 => {
                 let remove_field = index_data
                     .get(&field_id)
                     .is_some_and(|field_index| field_index.len() <= 1);
@@ -720,14 +498,14 @@ impl Engine {
                     field_index.shift_remove(&document_id);
                 }
             }
-            Some(&freq) => {
+            Some(freq) => {
                 if let Some(field_index) = index_data.get_mut(&field_id) {
                     field_index.insert(document_id, freq - 1);
                 }
             }
         }
 
-        if self.index.get(term).is_some_and(IndexMap::is_empty) {
+        if index_data.is_empty() {
             self.index.remove(term);
         }
     }
@@ -810,6 +588,64 @@ impl Engine {
         Ok(self.hits_to_json_string(&hits, &interner))
     }
 
+    pub fn wildcard_search(&self, options: &Value) -> Result<Vec<Value>> {
+        let _ = options; // Document boosting functions are handled by the wrapper.
+        let interner = Interner::default();
+        let hits: Vec<Hit> = self
+            .document_ids
+            .keys()
+            .map(|&doc_id| Hit {
+                doc_id,
+                score: 1.0,
+                terms: Vec::new(),
+                matches: Vec::new(),
+            })
+            .collect();
+        Ok(self.hits_to_values(&hits, &interner))
+    }
+
+    pub fn auto_suggest(&mut self, query: &str, options: &Value) -> Result<Vec<Value>> {
+        let base = self.default_auto_suggest.clone();
+        let query = Value::String(query.to_string());
+        let (hits, interner) = self.search_hits(&query, options, &base)?;
+
+        let mut suggestions: IndexMap<String, (f64, Vec<String>, u32)> = IndexMap::new();
+        for hit in &hits {
+            // Suggestions are built from the matched document terms (the
+            // `terms` field of each result), not the query terms.
+            let terms: Vec<String> = hit
+                .matches
+                .iter()
+                .map(|(term, _)| interner.resolve(*term).to_string())
+                .collect();
+            let phrase = terms.join(" ");
+            match suggestions.get_mut(&phrase) {
+                Some((score, _, count)) => {
+                    *score += hit.score;
+                    *count += 1;
+                }
+                None => {
+                    suggestions.insert(phrase, (hit.score, terms, 1));
+                }
+            }
+        }
+
+        let mut results: Vec<Value> = suggestions
+            .into_iter()
+            .map(|(suggestion, (score, terms, count))| {
+                json!({
+                    "suggestion": suggestion,
+                    "terms": terms,
+                    "score": score / f64::from(count),
+                })
+            })
+            .collect();
+        sort_by_score_desc(&mut results, |result| {
+            result.get("score").and_then(as_f64).unwrap_or(0.0)
+        });
+        Ok(results)
+    }
+
     /// Runs a search resolving option overlays against the given base
     /// options. Auto-suggestions use a different base than plain searches
     /// (combining with AND, and prefix-matching the last query term).
@@ -838,16 +674,277 @@ impl Engine {
             })
             .collect();
 
-        // Stable sort by descending score, matching JavaScript's stable sort.
-        hits.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        sort_by_score_desc(&mut hits, |hit| hit.score);
         Ok((hits, interner))
     }
 
+    fn execute_query(
+        &mut self,
+        query: &Value,
+        raw_options: &Value,
+        base: &SearchOptions,
+        interner: &mut Interner,
+    ) -> Result<RawResult> {
+        if let Some(queries) = query.get("queries").and_then(Value::as_array) {
+            // A combination node: its own keys override the inherited
+            // options, and are inherited by its subqueries.
+            let merged = shallow_merge(raw_options, query);
+            let subquery_options = without_key(&merged, "queries");
+            let mut results = Vec::with_capacity(queries.len());
+            for subquery in queries {
+                results.push(self.execute_query(subquery, &subquery_options, base, interner)?);
+            }
+            let combine = match subquery_options.get("combineWith") {
+                Some(value) => parse_combine(value)?,
+                None => Combine::Or,
+            };
+            return Ok(combine_results(results, combine));
+        }
+
+        let Some(text) = query.as_str() else {
+            return Err("MiniSearch: query must be a string or a query combination".to_string());
+        };
+
+        let options = base.overlay(raw_options)?;
+        let terms: Vec<String> = Self::tokenize(text)
+            .iter()
+            .filter_map(|token| Self::process_term(token))
+            .collect();
+
+        let mut results = Vec::with_capacity(terms.len());
+        for (position, term) in terms.iter().enumerate() {
+            let prefix = match options.prefix {
+                Prefix::Enabled(enabled) => enabled,
+                Prefix::LastTerm => position == terms.len() - 1,
+            };
+            results.push(self.execute_query_spec(term, prefix, &options, interner));
+        }
+        Ok(combine_results(results, options.combine_with))
+    }
+
+    /// Scores one query term: an exact pass, then prefix expansion, then
+    /// fuzzy expansion, each weighted by its distance from the query term.
+    fn execute_query_spec(
+        &mut self,
+        term: &str,
+        prefix: bool,
+        options: &SearchOptions,
+        interner: &mut Interner,
+    ) -> RawResult {
+        let search_fields = options.fields.as_ref().unwrap_or(&self.fields);
+        // A falsy boost (0) falls back to 1, matching the original's
+        // `getOwnProperty(options.boost, field) || 1`.
+        let field_boosts: Vec<(String, f64)> = search_fields
+            .iter()
+            .map(|field| {
+                let boost = options.boost.get(field).copied().unwrap_or(0.0);
+                (field.clone(), if boost == 0.0 { 1.0 } else { boost })
+            })
+            .collect();
+
+        let scoring = Scoring {
+            source_term: interner.intern(term),
+            field_boosts: &field_boosts,
+            bm25: options.bm25,
+        };
+        let mut results = RawResult::default();
+        let mut stale = Vec::new();
+
+        // Exact match.
+        self.term_results(
+            &scoring,
+            term,
+            scoring.source_term,
+            1.0,
+            &mut results,
+            &mut stale,
+        );
+        self.apply_stale(term, &mut stale);
+
+        let mut prefix_terms: Vec<String> = Vec::new();
+        if prefix {
+            self.index.for_each_prefix(term, &mut |derived, _| {
+                prefix_terms.push(derived.to_string());
+            });
+        }
+        let fuzzy_matches = self.fuzzy_matches(term, options);
+
+        let query_length = term.chars().count() as f64;
+        for derived in &prefix_terms {
+            let term_length = derived.chars().count() as f64;
+            let distance = term_length - query_length;
+            if distance == 0.0 {
+                continue; // Skip the exact match.
+            }
+            // Weight gradually approaches 0 as distance grows. Prefix matches
+            // decay more slowly than fuzzy matches, because they stay relevant
+            // at larger length differences.
+            let weight = options.weights.prefix * term_length / (term_length + 0.3 * distance);
+            let derived_id = interner.intern(derived);
+            self.term_results(
+                &scoring,
+                derived,
+                derived_id,
+                weight,
+                &mut results,
+                &mut stale,
+            );
+            self.apply_stale(derived, &mut stale);
+        }
+
+        for (derived, distance) in &fuzzy_matches {
+            if *distance == 0 {
+                continue; // Skip the exact match.
+            }
+            // A term matched by prefix search is always scored as a prefix
+            // result, exactly as in the original.
+            if prefix_terms
+                .iter()
+                .any(|prefix_term| prefix_term == derived)
+            {
+                continue;
+            }
+            let term_length = derived.chars().count() as f64;
+            let weight = options.weights.fuzzy * term_length / (term_length + *distance as f64);
+            let derived_id = interner.intern(derived);
+            self.term_results(
+                &scoring,
+                derived,
+                derived_id,
+                weight,
+                &mut results,
+                &mut stale,
+            );
+            self.apply_stale(derived, &mut stale);
+        }
+
+        results
+    }
+
+    /// Resolves the fuzzy setting for a term into matching index terms with
+    /// their edit distances. Fractional settings scale with the term length,
+    /// capped by `maxFuzzy`.
+    fn fuzzy_matches(&self, term: &str, options: &SearchOptions) -> Vec<(String, usize)> {
+        let fraction = match options.fuzzy {
+            Fuzzy::Off => return Vec::new(),
+            Fuzzy::Auto => 0.2,
+            Fuzzy::Value(value) => value,
+        };
+        let term_length = term.chars().count() as f64;
+        let max_distance = if fraction < 1.0 {
+            options.max_fuzzy.min((term_length * fraction).round())
+        } else {
+            fraction
+        };
+        if max_distance >= 1.0 {
+            self.index.fuzzy_get(term, max_distance as usize)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Scores one derived term against all searched fields, accumulating into
+    /// `results`. References to discarded documents are recorded in `stale`
+    /// for removal by the caller; the running `matching_fields` count is
+    /// decremented as they are found, mirroring the original's in-loop
+    /// bookkeeping.
+    fn term_results(
+        &self,
+        scoring: &Scoring,
+        derived_term: &str,
+        derived_id: u16,
+        term_weight: f64,
+        results: &mut RawResult,
+        stale: &mut Vec<(u32, u32)>,
+    ) {
+        let Some(field_term_data) = self.index.get(derived_term) else {
+            return;
+        };
+
+        for (field, field_boost) in scoring.field_boosts {
+            let Some(&field_id) = self.field_ids.get(field) else {
+                continue;
+            };
+            let Some(field_term_freqs) = field_term_data.get(&field_id) else {
+                continue;
+            };
+
+            let mut matching_fields = field_term_freqs.len() as u32;
+            let avg_field_length = self
+                .avg_field_length
+                .get(field_id as usize)
+                .copied()
+                .flatten()
+                .unwrap_or(0.0);
+
+            for (&doc_id, &term_freq) in field_term_freqs {
+                if !self.document_ids.contains_key(&doc_id) {
+                    stale.push((field_id, doc_id));
+                    matching_fields -= 1;
+                    continue;
+                }
+
+                let field_length = self
+                    .field_length
+                    .get(&doc_id)
+                    .and_then(|lengths| lengths.get(field_id as usize).copied().flatten())
+                    .unwrap_or(0);
+
+                let raw_score = bm25_score(
+                    f64::from(term_freq),
+                    f64::from(matching_fields),
+                    f64::from(self.document_count),
+                    f64::from(field_length),
+                    avg_field_length,
+                    scoring.bm25,
+                );
+                let weighted_score = term_weight * field_boost * raw_score;
+
+                match results.get_mut(&doc_id) {
+                    Some(result) => {
+                        result.score += weighted_score;
+                        result.add_term(scoring.source_term);
+                        result.add_match(derived_id, field_id);
+                    }
+                    None => {
+                        results.insert(
+                            doc_id,
+                            RawScore {
+                                score: weighted_score,
+                                terms: vec![scoring.source_term],
+                                matches: vec![(derived_id, vec![field_id])],
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Applies the stale-reference removals collected by `term_results`. The
+    /// original removes them one reference at a time during search; a stale
+    /// reference with a term frequency above one is only decremented, and is
+    /// fully cleaned up by later searches or vacuuming.
+    fn apply_stale(&mut self, derived_term: &str, stale: &mut Vec<(u32, u32)>) {
+        for (field_id, doc_id) in stale.drain(..) {
+            self.remove_term(field_id, doc_id, derived_term);
+        }
+    }
+
+    // -- Result assembly -----------------------------------------------------
+
+    /// Field names keyed by field ID, for result assembly.
+    fn field_names(&self) -> FxIndexMap<u32, &str> {
+        self.field_ids
+            .iter()
+            .map(|(name, &id)| (id, name.as_str()))
+            .collect()
+    }
+
     fn hits_to_values(&self, hits: &[Hit], interner: &Interner) -> Vec<Value> {
+        let field_names = self.field_names();
+        let field_name = |id: &u32| json!(field_names.get(id).copied().unwrap_or(""));
+
         hits.iter()
             .map(|hit| {
                 let mut result = JsonMap::new();
@@ -875,12 +972,7 @@ impl Engine {
                 for (term, fields) in &hit.matches {
                     matches.insert(
                         interner.resolve(*term).to_string(),
-                        Value::Array(
-                            fields
-                                .iter()
-                                .map(|field_id| json!(self.field_name(*field_id)))
-                                .collect(),
-                        ),
+                        Value::Array(fields.iter().map(field_name).collect()),
                     );
                 }
                 result.insert("match".to_string(), Value::Object(matches));
@@ -900,6 +992,8 @@ impl Engine {
     /// keeps the last occurrence, replicating the `Object.assign` override
     /// semantics of the original result assembly.
     fn hits_to_json_string(&self, hits: &[Hit], interner: &Interner) -> String {
+        let field_names = self.field_names();
+
         let mut out = String::with_capacity(hits.len() * 128 + 2);
         out.push('[');
         for (index, hit) in hits.iter().enumerate() {
@@ -935,7 +1029,7 @@ impl Engine {
                     if field_position > 0 {
                         out.push(',');
                     }
-                    json_string_to(&mut out, self.field_name(*field_id));
+                    json_string_to(&mut out, field_names.get(field_id).copied().unwrap_or(""));
                 }
                 out.push(']');
             }
@@ -952,345 +1046,6 @@ impl Engine {
         }
         out.push(']');
         out
-    }
-
-    fn field_name(&self, field_id: u32) -> &str {
-        self.field_ids
-            .iter()
-            .find(|(_, &id)| id == field_id)
-            .map(|(name, _)| name.as_str())
-            .unwrap_or("")
-    }
-
-    pub fn wildcard_search(&self, options: &Value) -> Result<Vec<Value>> {
-        let _ = options; // Document boosting functions are handled by the wrapper.
-        let interner = Interner::default();
-        let hits: Vec<Hit> = self
-            .document_ids
-            .keys()
-            .map(|&doc_id| Hit {
-                doc_id,
-                score: 1.0,
-                terms: Vec::new(),
-                matches: Vec::new(),
-            })
-            .collect();
-        Ok(self.hits_to_values(&hits, &interner))
-    }
-
-    pub fn auto_suggest(&mut self, query: &str, options: &Value) -> Result<Vec<Value>> {
-        let base = self.default_auto_suggest.clone();
-        let query = Value::String(query.to_string());
-        let (hits, interner) = self.search_hits(&query, options, &base)?;
-
-        let mut suggestions: IndexMap<String, (f64, Vec<String>, u32)> = IndexMap::new();
-        for hit in &hits {
-            // Suggestions are built from the matched document terms (the
-            // `terms` field of each result), not the query terms.
-            let terms: Vec<String> = hit
-                .matches
-                .iter()
-                .map(|(term, _)| interner.resolve(*term).to_string())
-                .collect();
-            let phrase = terms.join(" ");
-            match suggestions.get_mut(&phrase) {
-                Some(entry) => {
-                    entry.0 += hit.score;
-                    entry.2 += 1;
-                }
-                None => {
-                    suggestions.insert(phrase, (hit.score, terms, 1));
-                }
-            }
-        }
-
-        let mut results: Vec<Value> = suggestions
-            .into_iter()
-            .map(|(suggestion, (score, terms, count))| {
-                json!({
-                    "suggestion": suggestion,
-                    "terms": terms,
-                    "score": score / f64::from(count),
-                })
-            })
-            .collect();
-        results.sort_by(|a, b| {
-            let score_a = a.get("score").and_then(as_f64).unwrap_or(0.0);
-            let score_b = b.get("score").and_then(as_f64).unwrap_or(0.0);
-            score_b
-                .partial_cmp(&score_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        Ok(results)
-    }
-
-    fn execute_query(
-        &mut self,
-        query: &Value,
-        raw_options: &Value,
-        base: &SearchOptions,
-        interner: &mut Interner,
-    ) -> Result<RawResult> {
-        if let Some(object) = query.as_object() {
-            if let Some(queries) = object.get("queries").and_then(Value::as_array) {
-                // A combination node: its own keys override the inherited
-                // options, and are inherited by its subqueries.
-                let merged = shallow_merge(raw_options, query);
-                let subquery_options = without_key(&merged, "queries");
-                let mut results = Vec::with_capacity(queries.len());
-                for subquery in queries {
-                    results.push(self.execute_query(
-                        subquery,
-                        &subquery_options,
-                        base,
-                        interner,
-                    )?);
-                }
-                let combine = match subquery_options.get("combineWith") {
-                    Some(value) => parse_combine(value)?,
-                    None => Combine::Or,
-                };
-                return Ok(combine_results(results, combine));
-            }
-        }
-
-        let Some(text) = query.as_str() else {
-            return Err("MiniSearch: query must be a string or a query combination".to_string());
-        };
-
-        let options = base.overlay(raw_options)?;
-        let terms: Vec<String> = Self::tokenize(text)
-            .iter()
-            .filter_map(|token| Self::process_term(token))
-            .collect();
-
-        let term_count = terms.len();
-        let mut results = Vec::with_capacity(term_count);
-        for (position, term) in terms.iter().enumerate() {
-            let prefix = match options.prefix {
-                Prefix::Enabled(enabled) => enabled,
-                Prefix::LastTerm => position == term_count - 1,
-            };
-            let spec = QuerySpec {
-                term: term.clone(),
-                prefix,
-                fuzzy: options.fuzzy,
-                term_boost: 1.0,
-            };
-            results.push(self.execute_query_spec(&spec, &options, interner));
-        }
-        Ok(combine_results(results, options.combine_with))
-    }
-
-    fn execute_query_spec(
-        &mut self,
-        spec: &QuerySpec,
-        options: &SearchOptions,
-        interner: &mut Interner,
-    ) -> RawResult {
-        let search_fields = options.fields.as_ref().unwrap_or(&self.fields);
-        // A falsy boost (0) falls back to 1, matching the original's
-        // `getOwnProperty(options.boost, field) || 1`.
-        let boosts: Vec<(String, f64)> = search_fields
-            .iter()
-            .map(|field| {
-                let boost = options.boost.get(field).copied().unwrap_or(0.0);
-                (field.clone(), if boost == 0.0 { 1.0 } else { boost })
-            })
-            .collect();
-
-        let mut results = RawResult::default();
-        let mut stale = Vec::new();
-        let source_id = interner.intern(&spec.term);
-
-        // Exact match.
-        self.term_results(
-            source_id,
-            &spec.term,
-            source_id,
-            1.0,
-            spec.term_boost,
-            &boosts,
-            options.bm25,
-            &mut results,
-            &mut stale,
-        );
-        self.apply_stale(&spec.term, &mut stale);
-
-        let mut prefix_terms: Vec<String> = Vec::new();
-        if spec.prefix {
-            self.index.for_each_prefix(&spec.term, &mut |term, _| {
-                prefix_terms.push(term.to_string());
-            });
-        }
-
-        let fuzzy_matches = match spec.fuzzy {
-            Fuzzy::Off => Vec::new(),
-            Fuzzy::Auto | Fuzzy::Value(_) => {
-                let fraction = match spec.fuzzy {
-                    Fuzzy::Auto => 0.2,
-                    Fuzzy::Value(value) => value,
-                    Fuzzy::Off => unreachable!(),
-                };
-                let term_length = spec.term.chars().count() as f64;
-                let max_distance = if fraction < 1.0 {
-                    options.max_fuzzy.min((term_length * fraction).round())
-                } else {
-                    fraction
-                };
-                if max_distance >= 1.0 {
-                    self.index.fuzzy_get(&spec.term, max_distance as usize)
-                } else {
-                    Vec::new()
-                }
-            }
-        };
-
-        let query_length = spec.term.chars().count() as f64;
-        for term in &prefix_terms {
-            let term_length = term.chars().count() as f64;
-            let distance = term_length - query_length;
-            if distance == 0.0 {
-                continue; // Skip the exact match.
-            }
-            // Weight gradually approaches 0 as distance grows. Prefix matches
-            // decay more slowly than fuzzy matches, because they stay relevant
-            // at larger length differences.
-            let weight = options.weights.prefix * term_length / (term_length + 0.3 * distance);
-            let derived_id = interner.intern(term);
-            self.term_results(
-                source_id,
-                term,
-                derived_id,
-                weight,
-                spec.term_boost,
-                &boosts,
-                options.bm25,
-                &mut results,
-                &mut stale,
-            );
-            self.apply_stale(term, &mut stale);
-        }
-
-        for (term, distance) in &fuzzy_matches {
-            if *distance == 0 {
-                continue; // Skip the exact match.
-            }
-            // A term matched by prefix search is always scored as a prefix
-            // result, exactly as in the original.
-            if prefix_terms.iter().any(|prefix_term| prefix_term == term) {
-                continue;
-            }
-            let term_length = term.chars().count() as f64;
-            let weight = options.weights.fuzzy * term_length / (term_length + *distance as f64);
-            let derived_id = interner.intern(term);
-            self.term_results(
-                source_id,
-                term,
-                derived_id,
-                weight,
-                spec.term_boost,
-                &boosts,
-                options.bm25,
-                &mut results,
-                &mut stale,
-            );
-            self.apply_stale(term, &mut stale);
-        }
-
-        results
-    }
-
-    /// Scores one derived term against all searched fields, accumulating into
-    /// `results`. References to discarded documents are recorded in `stale`
-    /// for removal by the caller; the running `matching_fields` count is
-    /// decremented as they are found, mirroring the original's in-loop
-    /// bookkeeping.
-    #[allow(clippy::too_many_arguments)]
-    fn term_results(
-        &self,
-        source_term: u16,
-        derived_term: &str,
-        derived_id: u16,
-        term_weight: f64,
-        term_boost: f64,
-        field_boosts: &[(String, f64)],
-        bm25: Bm25,
-        results: &mut RawResult,
-        stale: &mut Vec<(u32, u32)>,
-    ) {
-        let Some(field_term_data) = self.index.get(derived_term) else {
-            return;
-        };
-
-        for (field, field_boost) in field_boosts {
-            let Some(&field_id) = self.field_ids.get(field) else {
-                continue;
-            };
-            let Some(field_term_freqs) = field_term_data.get(&field_id) else {
-                continue;
-            };
-
-            let mut matching_fields = field_term_freqs.len() as u32;
-            let avg_field_length = self
-                .avg_field_length
-                .get(field_id as usize)
-                .copied()
-                .flatten()
-                .unwrap_or(0.0);
-
-            for (&doc_id, &term_freq) in field_term_freqs {
-                if !self.document_ids.contains_key(&doc_id) {
-                    stale.push((field_id, doc_id));
-                    matching_fields -= 1;
-                    continue;
-                }
-
-                let field_length = self
-                    .field_length
-                    .get(&doc_id)
-                    .and_then(|lengths| lengths.get(field_id as usize).copied().flatten())
-                    .unwrap_or(0);
-
-                let raw_score = bm25_score(
-                    f64::from(term_freq),
-                    f64::from(matching_fields),
-                    f64::from(self.document_count),
-                    f64::from(field_length),
-                    avg_field_length,
-                    bm25,
-                );
-                let weighted_score = term_weight * term_boost * field_boost * raw_score;
-
-                match results.get_mut(&doc_id) {
-                    Some(result) => {
-                        result.score += weighted_score;
-                        result.add_term(source_term);
-                        result.add_match(derived_id, field_id);
-                    }
-                    None => {
-                        results.insert(
-                            doc_id,
-                            RawScore {
-                                score: weighted_score,
-                                terms: vec![source_term],
-                                matches: vec![(derived_id, vec![field_id])],
-                            },
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// Applies the stale-reference removals collected by `term_results`. The
-    /// original removes them one reference at a time during search; a stale
-    /// reference with a term frequency above one is only decremented, and is
-    /// fully cleaned up by later searches or vacuuming.
-    fn apply_stale(&mut self, derived_term: &str, stale: &mut Vec<(u32, u32)>) {
-        for (field_id, doc_id) in stale.drain(..) {
-            self.remove_term(field_id, doc_id, derived_term);
-        }
     }
 
     // -- Serialization -------------------------------------------------------
@@ -1386,9 +1141,7 @@ impl Engine {
 
         if let Some(ids) = data.get("documentIds").and_then(Value::as_object) {
             for (short_id, id) in ids {
-                let short_id: u32 = short_id.parse().map_err(|_| {
-                    "MiniSearch: invalid document ID in serialized index".to_string()
-                })?;
+                let short_id = parse_short_id(short_id)?;
                 engine.document_ids.insert(short_id, id.clone());
                 engine.id_to_short.insert(id_key(id), short_id);
             }
@@ -1396,9 +1149,6 @@ impl Engine {
 
         if let Some(lengths) = data.get("fieldLength").and_then(Value::as_object) {
             for (short_id, list) in lengths {
-                let short_id: u32 = short_id.parse().map_err(|_| {
-                    "MiniSearch: invalid document ID in serialized index".to_string()
-                })?;
                 let list = list
                     .as_array()
                     .map(|items| {
@@ -1408,7 +1158,7 @@ impl Engine {
                             .collect()
                     })
                     .unwrap_or_default();
-                engine.field_length.insert(short_id, list);
+                engine.field_length.insert(parse_short_id(short_id)?, list);
             }
         }
 
@@ -1418,11 +1168,10 @@ impl Engine {
 
         if let Some(stored) = data.get("storedFields").and_then(Value::as_object) {
             for (short_id, fields) in stored {
-                let short_id: u32 = short_id.parse().map_err(|_| {
-                    "MiniSearch: invalid document ID in serialized index".to_string()
-                })?;
                 if let Some(fields) = fields.as_object() {
-                    engine.stored_fields.insert(short_id, fields.clone());
+                    engine
+                        .stored_fields
+                        .insert(parse_short_id(short_id)?, fields.clone());
                 }
             }
         }
@@ -1465,10 +1214,8 @@ impl Engine {
                     };
                     let mut doc_freqs = DocFreqs::default();
                     for (doc_id, freq) in freqs {
-                        let doc_id: u32 = doc_id.parse().map_err(|_| {
-                            "MiniSearch: invalid document ID in serialized index".to_string()
-                        })?;
-                        doc_freqs.insert(doc_id, freq.as_u64().unwrap_or(0) as u32);
+                        doc_freqs
+                            .insert(parse_short_id(doc_id)?, freq.as_u64().unwrap_or(0) as u32);
                     }
                     data_map.insert(field_id, doc_freqs);
                 }
@@ -1478,6 +1225,22 @@ impl Engine {
 
         Ok(engine)
     }
+}
+
+fn parse_short_id(text: &str) -> Result<u32> {
+    text.parse()
+        .map_err(|_| "MiniSearch: invalid document ID in serialized index".to_string())
+}
+
+/// Stable sort by descending score, matching JavaScript's stable `sort`.
+/// Non-comparable (NaN) scores compare as equal, like a comparator returning
+/// NaN in JavaScript.
+fn sort_by_score_desc<T>(items: &mut [T], score: impl Fn(&T) -> f64) {
+    items.sort_by(|a, b| {
+        score(b)
+            .partial_cmp(&score(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// BM25+ scoring, identical to the original implementation.
@@ -1554,60 +1317,4 @@ fn combine_and_not(mut a: RawResult, b: RawResult) -> RawResult {
         a.shift_remove(doc_id);
     }
     a
-}
-
-// -- JSON writing ------------------------------------------------------------
-
-fn json_string_to(out: &mut String, text: &str) {
-    out.push('"');
-    for ch in text.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if (ch as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", ch as u32));
-            }
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-}
-
-fn json_number_to(out: &mut String, value: f64) {
-    if value.is_finite() {
-        out.push_str(
-            serde_json::Number::from_f64(value)
-                .map(|number| number.to_string())
-                .unwrap_or_else(|| "0".to_string())
-                .as_str(),
-        );
-    } else {
-        out.push_str("null");
-    }
-}
-
-fn json_value_to(out: &mut String, value: &Value) {
-    match serde_json::to_string(value) {
-        Ok(text) => out.push_str(&text),
-        Err(_) => out.push_str("null"),
-    }
-}
-
-fn shallow_merge(base: &Value, overlay: &Value) -> Value {
-    let mut merged = base.as_object().cloned().unwrap_or_default();
-    if let Some(object) = overlay.as_object() {
-        for (key, value) in object {
-            merged.insert(key.clone(), value.clone());
-        }
-    }
-    Value::Object(merged)
-}
-
-fn without_key(value: &Value, key: &str) -> Value {
-    let mut object = value.as_object().cloned().unwrap_or_default();
-    object.remove(key);
-    Value::Object(object)
 }
