@@ -105,8 +105,12 @@ engine maps are insertion-ordered `IndexMap`s with the Fx hasher, and the
 posting lists themselves are flat insertion-ordered pair vectors (`VecMap`).
 Posting lists are typically tiny, so linear lookup — scanning from the back,
 where the most recently indexed document lives — beats hashing, and dropping
-the per-`(term, field)` hash-table overhead cuts index memory by about 20%
-(roughly 3x smaller than the JS original's `Map`-based index).
+the per-`(term, field)` hash-table overhead cuts index memory by about 20%.
+Two further compactions: stored fields are `(interned name ID, value)` pairs
+sharing one name table instead of per-document keyed maps, and document-ID
+identity is an enum keyed on f64 bits (SameValueZero, like a JS `Map`)
+instead of formatted strings. Together the index is roughly 3x smaller than
+the JS original's `Map`-based index.
 
 Scoring is BM25+ with the original's constants and the same
 order-of-operations, including its quirks:

@@ -16,7 +16,7 @@ use serde_json::{json, Map as JsonMap, Value};
 
 use crate::js::{
     as_f64, id_key, js_text, js_to_string, json_number_to, json_string_to, json_value_to,
-    shallow_merge, without_key,
+    shallow_merge, without_key, IdKey,
 };
 use crate::options::{
     parse_auto_vacuum, parse_combine, string_array, AutoVacuum, Bm25, Combine, Fuzzy, Prefix,
@@ -148,11 +148,15 @@ pub struct Engine {
     index: RadixTree<FieldTermData>,
     document_count: u32,
     document_ids: FxIndexMap<u32, Value>,
-    id_to_short: IndexMap<String, u32>,
+    id_to_short: FxIndexMap<IdKey, u32>,
     field_length: FxIndexMap<u32, Vec<Option<u32>>>,
     avg_field_length: Vec<Option<f64>>,
     next_id: u32,
-    stored_fields: FxIndexMap<u32, JsonMap<String, Value>>,
+    /// Stored fields per document as `(name ID, value)` pairs; names are
+    /// interned in `stored_field_names` instead of cloning a keyed map per
+    /// document.
+    stored_fields: FxIndexMap<u32, Vec<(u16, Value)>>,
+    stored_field_names: Vec<String>,
     dirt_count: u32,
 }
 
@@ -194,6 +198,7 @@ impl Engine {
         Ok(Engine {
             fields,
             field_ids,
+            stored_field_names: store_fields.clone(),
             store_fields,
             id_field,
             default_search,
@@ -202,7 +207,7 @@ impl Engine {
             index: RadixTree::new(),
             document_count: 0,
             document_ids: FxIndexMap::default(),
-            id_to_short: IndexMap::new(),
+            id_to_short: FxIndexMap::default(),
             field_length: FxIndexMap::default(),
             avg_field_length: Vec::new(),
             next_id: 0,
@@ -459,9 +464,12 @@ impl Engine {
 
     pub fn get_stored_fields(&self, id: &Value) -> Option<Value> {
         let short_id = self.id_to_short.get(&id_key(id))?;
-        self.stored_fields
-            .get(short_id)
-            .map(|fields| Value::Object(fields.clone()))
+        let entries = self.stored_fields.get(short_id)?;
+        let mut fields = JsonMap::new();
+        for (id, value) in entries {
+            fields.insert(self.stored_field_names[*id as usize].clone(), value.clone());
+        }
+        Some(Value::Object(fields))
     }
 
     pub fn document_count(&self) -> u32 {
@@ -583,10 +591,28 @@ impl Engine {
         if self.store_fields.is_empty() {
             return;
         }
-        let fields = self.stored_fields.entry(document_id).or_default();
-        for field in &self.store_fields {
+        // The first `store_fields.len()` interned name IDs are the store
+        // fields themselves, in order.
+        let entries = self.stored_fields.entry(document_id).or_default();
+        for (index, field) in self.store_fields.iter().enumerate() {
             if let Some(value) = document.get(field) {
-                fields.insert(field.clone(), value.clone());
+                let id = index as u16;
+                match entries.iter_mut().find(|(existing, _)| *existing == id) {
+                    Some((_, existing)) => *existing = value.clone(),
+                    None => entries.push((id, value.clone())),
+                }
+            }
+        }
+    }
+
+    /// Interns a stored-field name, for indexes loaded from serialized data
+    /// whose stored keys are not limited to `store_fields`.
+    fn stored_name_id(&mut self, name: &str) -> u16 {
+        match self.stored_field_names.iter().position(|n| n == name) {
+            Some(index) => index as u16,
+            None => {
+                self.stored_field_names.push(name.to_string());
+                (self.stored_field_names.len() - 1) as u16
             }
         }
     }
@@ -788,6 +814,13 @@ impl Engine {
             });
         }
         let fuzzy_matches = self.fuzzy_matches(term, options);
+        // For the prefix-overlap skip check in the fuzzy pass: a hash set
+        // beats a linear scan when both expansions are large.
+        let prefix_term_set: FxHashSet<&str> = if fuzzy_matches.is_empty() {
+            FxHashSet::default()
+        } else {
+            prefix_terms.iter().map(String::as_str).collect()
+        };
 
         let query_length = term.chars().count() as f64;
         for derived in &prefix_terms {
@@ -818,10 +851,7 @@ impl Engine {
             }
             // A term matched by prefix search is always scored as a prefix
             // result, exactly as in the original.
-            if prefix_terms
-                .iter()
-                .any(|prefix_term| prefix_term == derived)
-            {
+            if prefix_term_set.contains(derived.as_str()) {
                 continue;
             }
             let term_length = derived.chars().count() as f64;
@@ -998,8 +1028,8 @@ impl Engine {
                 result.insert("match".to_string(), Value::Object(matches));
 
                 if let Some(stored) = self.stored_fields.get(&hit.doc_id) {
-                    for (field, value) in stored {
-                        result.insert(field.clone(), value.clone());
+                    for (id, value) in stored {
+                        result.insert(self.stored_field_names[*id as usize].clone(), value.clone());
                     }
                 }
                 Value::Object(result)
@@ -1055,9 +1085,9 @@ impl Engine {
             }
             out.push('}');
             if let Some(stored) = self.stored_fields.get(&hit.doc_id) {
-                for (field, value) in stored {
+                for (id, value) in stored {
                     out.push(',');
-                    json_string_to(&mut out, field);
+                    json_string_to(&mut out, &self.stored_field_names[*id as usize]);
                     out.push(':');
                     json_value_to(&mut out, value);
                 }
@@ -1104,8 +1134,12 @@ impl Engine {
             );
         }
         let mut stored = JsonMap::new();
-        for (short_id, fields) in &self.stored_fields {
-            stored.insert(short_id.to_string(), Value::Object(fields.clone()));
+        for (short_id, entries) in &self.stored_fields {
+            let mut fields = JsonMap::new();
+            for (id, value) in entries {
+                fields.insert(self.stored_field_names[*id as usize].clone(), value.clone());
+            }
+            stored.insert(short_id.to_string(), Value::Object(fields));
         }
         let mut field_ids = JsonMap::new();
         for (field, id) in &self.field_ids {
@@ -1190,13 +1224,21 @@ impl Engine {
         }
 
         out.push_str("],\"storedFields\":{");
-        for (position, (short_id, fields)) in self.stored_fields.iter().enumerate() {
+        for (position, (short_id, entries)) in self.stored_fields.iter().enumerate() {
             if position > 0 {
                 out.push(',');
             }
             json_string_to(&mut out, &short_id.to_string());
-            out.push(':');
-            json_value_to(&mut out, fields);
+            out.push_str(":{");
+            for (entry_position, (id, value)) in entries.iter().enumerate() {
+                if entry_position > 0 {
+                    out.push(',');
+                }
+                json_string_to(&mut out, &self.stored_field_names[*id as usize]);
+                out.push(':');
+                json_value_to(&mut out, value);
+            }
+            out.push('}');
         }
 
         out.push_str("},\"dirtCount\":");
@@ -1297,9 +1339,12 @@ impl Engine {
         if let Some(stored) = data.get("storedFields").and_then(Value::as_object) {
             for (short_id, fields) in stored {
                 if let Some(fields) = fields.as_object() {
-                    engine
-                        .stored_fields
-                        .insert(parse_short_id(short_id)?, fields.clone());
+                    let short_id = parse_short_id(short_id)?;
+                    let mut entries = Vec::with_capacity(fields.len());
+                    for (name, value) in fields {
+                        entries.push((engine.stored_name_id(name), value.clone()));
+                    }
+                    engine.stored_fields.insert(short_id, entries);
                 }
             }
         }

@@ -226,17 +226,18 @@ Bun 1.3, Apple Silicon, with warmup:
 
 | Benchmark | Speedup vs JS |
 | --- | --- |
-| Serialize index (`toJsonString`) | 4.5x |
-| Load serialized index | 2.0x |
+| Serialize index (`toJsonString`) | 5x |
+| Load serialized index | 2.3x |
 | Auto suggestion | 1.5x |
-| Indexing from a JSON string (`addAllJson`) | 1.1–1.2x |
+| Indexing from a JSON string (`addAllJson`) | 1.2–1.3x |
 | Selective queries (few results) | 1.0x |
 | Indexing from JavaScript objects | 0.9x |
 | Exact / prefix / fuzzy search (mixed, incl. broad queries) | 0.3–0.5x |
 
 Memory (`bun run bench:memory`, RSS per index on the same corpus):
-ferrosearch ≈ 7.5 MB versus ≈ 22 MB for the JS original — about 3x smaller,
-thanks to flat-vector posting lists instead of per-entry `Map` objects.
+ferrosearch ≈ 6.8 MB versus ≈ 22 MB for the JS original — about 3x smaller,
+thanks to flat-vector posting lists, interned stored-field names, and
+enum-keyed document IDs instead of per-entry `Map` objects and strings.
 
 Honest summary: once the JavaScript JIT is warm, the original wins most bulk
 search scenarios, because every ferrosearch result still crosses the native

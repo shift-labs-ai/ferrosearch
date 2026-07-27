@@ -41,15 +41,31 @@ fn js_number_string(number: &Number) -> String {
     number.to_string()
 }
 
-/// A stable identity key for a document ID value. JavaScript distinguishes
-/// the number `1` from the string `"1"`, so keys are namespaced by type.
-pub fn id_key(id: &Value) -> String {
+/// A document-ID identity key. JavaScript `Map` keys follow SameValueZero:
+/// the number `1` and the string `"1"` are distinct, and numbers compare by
+/// value (JavaScript numbers are f64, so numbers are keyed by their bits,
+/// with -0 normalized to 0). An enum avoids string formatting on every ID
+/// operation.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum IdKey {
+    Num(u64),
+    Str(Box<str>),
+    Bool(bool),
+    Null,
+    Other(Box<str>),
+}
+
+pub fn id_key(id: &Value) -> IdKey {
     match id {
-        Value::String(s) => format!("s:{s}"),
-        Value::Number(n) => format!("n:{}", js_number_string(n)),
-        Value::Bool(b) => format!("b:{b}"),
-        Value::Null => "null".to_string(),
-        other => format!("j:{other}"),
+        Value::Number(n) => {
+            let float = n.as_f64().unwrap_or(f64::NAN);
+            let float = if float == 0.0 { 0.0 } else { float };
+            IdKey::Num(float.to_bits())
+        }
+        Value::String(s) => IdKey::Str(s.as_str().into()),
+        Value::Bool(b) => IdKey::Bool(*b),
+        Value::Null => IdKey::Null,
+        other => IdKey::Other(other.to_string().into_boxed_str()),
     }
 }
 
@@ -73,6 +89,14 @@ pub fn without_key(value: &Value, key: &str) -> Value {
 // -- JSON writing ------------------------------------------------------------
 
 pub fn json_string_to(out: &mut String, text: &str) {
+    // Fast path: nothing to escape, the overwhelmingly common case for terms
+    // and field names. Multi-byte UTF-8 units are >= 0x80 and never escape.
+    if text.bytes().all(|b| b != b'"' && b != b'\\' && b >= 0x20) {
+        out.push('"');
+        out.push_str(text);
+        out.push('"');
+        return;
+    }
     out.push('"');
     for ch in text.chars() {
         match ch {
