@@ -45,19 +45,25 @@ const results = JSON.parse(miniSearch.searchJson("zen art motorcycle"));
 
 ## Performance
 
-Billboard corpus (5,086 documents, two indexed fields), Bun 1.3, Apple Silicon,
-compared against minisearch 7.2.0:
+Run the committed benchmark with `bun run bench` (Billboard corpus, 5,086
+documents, two indexed fields, compared against minisearch 7.2.0). Measured on
+Bun 1.3, Apple Silicon, with warmup:
 
-| Operation | Speedup |
+| Benchmark | Speedup vs JS |
 | --- | --- |
-| Indexing | 1.5x |
-| Search, no/few results | 1.8–4x |
-| Search, ~400 results | 0.8x |
-| Search, ~1,200 results | 0.7x |
+| Auto suggestion | 1.7x |
+| Load serialized index | 2.1x |
+| Queries with few or no results | 1.8–4x |
+| Indexing | 0.9x |
+| Exact / prefix / fuzzy search (mixed, incl. broad queries) | 0.3–0.5x |
+| Serialize index | 0.4x |
 
-Rust wins on indexing and selective queries. Very broad queries returning a
-large fraction of the corpus are currently slower, because every result still
-crosses the native boundary; this is the main open optimization.
+Honest summary: once the JavaScript JIT is warm, the original wins most bulk
+search scenarios, because every ferrosearch result still crosses the native
+boundary as JSON. ferrosearch wins on cold start, selective queries,
+auto-suggest, and index loading. Reducing result-transfer cost is the main
+open optimization; a result-paging API would change this picture
+substantially.
 
 ## Faithfulness notes
 
