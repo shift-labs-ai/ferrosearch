@@ -11,11 +11,11 @@
   },
   "scripts": {
     "bench": "bun bench/compare.ts",
-    "build": "napi build --release --strip",
-    "build:debug": "napi build",
+    "build": "napi build --release --strip --platform",
+    "build:debug": "napi build --platform",
     "test": "bun test",
     "test:rust": "cargo test",
-    "verify": "cargo fmt --check && cargo clippy -- -D warnings && cargo test && napi build --release --strip && bun test"
+    "verify": "cargo fmt --check && cargo clippy -- -D warnings && cargo test && napi build --release --strip --platform && bun test"
   },
   "devDependencies": {
     "@napi-rs/cli": "2.18.4",
