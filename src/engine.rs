@@ -7,11 +7,15 @@
 //! order-sensitive `matching_fields` bookkeeping — matches JavaScript `Map`
 //! behavior.
 
+use std::borrow::Cow;
+use std::fmt;
 use std::sync::OnceLock;
 
 use indexmap::IndexMap;
 use regex::Regex;
 use rustc_hash::{FxBuildHasher, FxHashSet};
+use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::value::RawValue;
 use serde_json::{json, Map as JsonMap, Value};
 
 use crate::js::{
@@ -35,6 +39,12 @@ type DocFreqs = VecMap<u32, u32>;
 type FieldTermData = VecMap<u32, DocFreqs>;
 
 const SERIALIZATION_VERSION: u64 = 2;
+
+const ERR_INCOMPATIBLE_VERSION: &str =
+    "MiniSearch: cannot deserialize an index created with an incompatible version";
+const ERR_INVALID_INDEX_ENTRY: &str = "MiniSearch: invalid index entry in serialized index";
+const ERR_INVALID_FIELD_ID: &str = "MiniSearch: invalid field ID in serialized index";
+const ERR_INVALID_DOCUMENT_ID: &str = "MiniSearch: invalid document ID in serialized index";
 
 /// Maximum number of memoized search results. Sized for interactive
 /// workloads (autocomplete keystrokes, dashboard refreshes) where the same
@@ -1333,18 +1343,75 @@ impl Engine {
                     .to_string(),
             );
         }
-        let data: Value = serde_json::from_str(json_text)
-            .map_err(|error| format!("MiniSearch: invalid JSON index: {error}"))?;
-        Self::load_js(&data, options)
+
+        // One syntax-validating pass that keeps a raw slice per top-level
+        // section instead of materializing a value tree of the whole index.
+        // The `index` section dominates the payload (one entry per term) and
+        // is streamed directly into the radix tree below.
+        let sections: std::collections::HashMap<String, &RawValue> =
+            match serde_json::from_str(json_text) {
+                Ok(sections) => sections,
+                Err(_) => {
+                    // Distinguish malformed JSON from valid JSON of the wrong
+                    // shape; the latter is an index without a usable version.
+                    return match serde_json::from_str::<IgnoredAny>(json_text) {
+                        Ok(_) => Err(ERR_INCOMPATIBLE_VERSION.to_string()),
+                        Err(error) => Err(format!("MiniSearch: invalid JSON index: {error}")),
+                    };
+                }
+            };
+        let section = |name: &str| sections.get(name).map(|raw| raw.get());
+        // Section slices were syntax-validated by the pass above, so parsing
+        // one into a value tree cannot fail.
+        let parse = |name: &str| -> Value {
+            section(name)
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or(Value::Null)
+        };
+
+        let version = parse("serializationVersion").as_u64();
+        if version != Some(1) && version != Some(2) {
+            return Err(ERR_INCOMPATIBLE_VERSION.to_string());
+        }
+        if version == Some(1) {
+            // The legacy format nests postings under a "ds" field with
+            // order-dependent fallbacks; it stays on the value-tree path.
+            let data: Value = serde_json::from_str(json_text)
+                .map_err(|error| format!("MiniSearch: invalid JSON index: {error}"))?;
+            return Self::load_js(&data, options);
+        }
+
+        let mut engine = Engine::new(options)?;
+        engine.document_count = parse("documentCount").as_u64().unwrap_or(0) as u32;
+        engine.next_id = parse("nextId").as_u64().unwrap_or(0) as u32;
+        engine.dirt_count = parse("dirtCount").as_u64().unwrap_or(0) as u32;
+        engine.load_document_ids(&parse("documentIds"))?;
+        engine.load_field_length(&parse("fieldLength"))?;
+        engine.load_avg_field_length(&parse("averageFieldLength"));
+        engine.load_stored_fields(&parse("storedFields"))?;
+        engine.load_field_ids(&parse("fieldIds"))?;
+
+        if let Some(raw_index) = section("index") {
+            // A non-array index section is skipped, like `as_array` before.
+            if raw_index.trim_start().starts_with('[') {
+                let mut deserializer = serde_json::Deserializer::from_str(raw_index);
+                IndexSectionSeed {
+                    index: &mut engine.index,
+                }
+                .deserialize(&mut deserializer)
+                .map_err(strip_error_position)?;
+            }
+        }
+
+        Ok(engine)
     }
 
+    /// Loads the legacy version-1 format (and, defensively, version 2) from
+    /// a parsed value tree.
     fn load_js(data: &Value, options: &Value) -> Result<Engine> {
         let version = data.get("serializationVersion").and_then(Value::as_u64);
         if version != Some(1) && version != Some(2) {
-            return Err(
-                "MiniSearch: cannot deserialize an index created with an incompatible version"
-                    .to_string(),
-            );
+            return Err(ERR_INCOMPATIBLE_VERSION.to_string());
         }
 
         let mut engine = Engine::new(options)?;
@@ -1356,73 +1423,31 @@ impl Engine {
         engine.next_id = data.get("nextId").and_then(Value::as_u64).unwrap_or(0) as u32;
         engine.dirt_count = data.get("dirtCount").and_then(Value::as_u64).unwrap_or(0) as u32;
 
-        if let Some(ids) = data.get("documentIds").and_then(Value::as_object) {
-            for (short_id, id) in ids {
-                let short_id = parse_short_id(short_id)?;
-                engine.document_ids.insert(short_id, id.clone());
-                engine.id_to_short.insert(id_key(id), short_id);
-            }
-        }
-
-        if let Some(lengths) = data.get("fieldLength").and_then(Value::as_object) {
-            for (short_id, list) in lengths {
-                let list = list
-                    .as_array()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .map(|item| item.as_u64().map(|length| length as u32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                engine.field_length.insert(parse_short_id(short_id)?, list);
-            }
-        }
-
-        if let Some(averages) = data.get("averageFieldLength").and_then(Value::as_array) {
-            engine.avg_field_length = averages.iter().map(as_f64).collect();
-        }
-
-        if let Some(stored) = data.get("storedFields").and_then(Value::as_object) {
-            for (short_id, fields) in stored {
-                if let Some(fields) = fields.as_object() {
-                    let short_id = parse_short_id(short_id)?;
-                    let mut entries = Vec::with_capacity(fields.len());
-                    for (name, value) in fields {
-                        entries.push((engine.stored_name_id(name), value.clone()));
-                    }
-                    engine.stored_fields.insert(short_id, entries);
-                }
-            }
-        }
-
-        if let Some(field_ids) = data.get("fieldIds").and_then(Value::as_object) {
-            engine.field_ids.clear();
-            for (field, id) in field_ids {
-                let Some(id) = id.as_u64() else {
-                    return Err("MiniSearch: invalid field ID in serialized index".to_string());
-                };
-                engine.field_ids.insert(field.clone(), id as u32);
-            }
-        }
+        let null = Value::Null;
+        let field = |name: &str| data.get(name).unwrap_or(&null);
+        engine.load_document_ids(field("documentIds"))?;
+        engine.load_field_length(field("fieldLength"))?;
+        engine.load_avg_field_length(field("averageFieldLength"));
+        engine.load_stored_fields(field("storedFields"))?;
+        engine.load_field_ids(field("fieldIds"))?;
 
         if let Some(entries) = data.get("index").and_then(Value::as_array) {
             for entry in entries {
                 let Some(pair) = entry.as_array() else {
-                    return Err("MiniSearch: invalid index entry in serialized index".to_string());
+                    return Err(ERR_INVALID_INDEX_ENTRY.to_string());
                 };
                 let (Some(term), Some(fields_data)) = (
                     pair.first().and_then(Value::as_str),
                     pair.get(1).and_then(Value::as_object),
                 ) else {
-                    return Err("MiniSearch: invalid index entry in serialized index".to_string());
+                    return Err(ERR_INVALID_INDEX_ENTRY.to_string());
                 };
 
                 let mut data_map = FieldTermData::default();
                 for (field_id, index_entry) in fields_data {
-                    let field_id: u32 = field_id.parse().map_err(|_| {
-                        "MiniSearch: invalid field ID in serialized index".to_string()
-                    })?;
+                    let field_id: u32 = field_id
+                        .parse()
+                        .map_err(|_| ERR_INVALID_FIELD_ID.to_string())?;
                     // Version 1 nested the entry inside a field named "ds".
                     let index_entry = if version == Some(1) {
                         index_entry.get("ds").unwrap_or(index_entry)
@@ -1432,12 +1457,11 @@ impl Engine {
                     let Some(freqs) = index_entry.as_object() else {
                         continue;
                     };
-                    let mut doc_freqs = DocFreqs::default();
+                    let mut pairs = Vec::with_capacity(freqs.len());
                     for (doc_id, freq) in freqs {
-                        doc_freqs
-                            .insert(parse_short_id(doc_id)?, freq.as_u64().unwrap_or(0) as u32);
+                        pairs.push((parse_short_id(doc_id)?, freq.as_u64().unwrap_or(0) as u32));
                     }
-                    data_map.insert(field_id, doc_freqs);
+                    data_map.insert(field_id, DocFreqs::from_pairs_last_wins(pairs));
                 }
                 engine.index.insert(term, data_map);
             }
@@ -1445,11 +1469,423 @@ impl Engine {
 
         Ok(engine)
     }
+
+    // -- Deserialization sections, shared by both load paths ------------------
+
+    fn load_document_ids(&mut self, value: &Value) -> Result<()> {
+        let Some(ids) = value.as_object() else {
+            return Ok(());
+        };
+        for (short_id, id) in ids {
+            let short_id = parse_short_id(short_id)?;
+            self.document_ids.insert(short_id, id.clone());
+            self.id_to_short.insert(id_key(id), short_id);
+        }
+        Ok(())
+    }
+
+    fn load_field_length(&mut self, value: &Value) -> Result<()> {
+        let Some(lengths) = value.as_object() else {
+            return Ok(());
+        };
+        for (short_id, list) in lengths {
+            let list = list
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_u64().map(|length| length as u32))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.field_length.insert(parse_short_id(short_id)?, list);
+        }
+        Ok(())
+    }
+
+    fn load_avg_field_length(&mut self, value: &Value) {
+        if let Some(averages) = value.as_array() {
+            self.avg_field_length = averages.iter().map(as_f64).collect();
+        }
+    }
+
+    fn load_stored_fields(&mut self, value: &Value) -> Result<()> {
+        let Some(stored) = value.as_object() else {
+            return Ok(());
+        };
+        for (short_id, fields) in stored {
+            if let Some(fields) = fields.as_object() {
+                let short_id = parse_short_id(short_id)?;
+                let mut entries = Vec::with_capacity(fields.len());
+                for (name, value) in fields {
+                    entries.push((self.stored_name_id(name), value.clone()));
+                }
+                self.stored_fields.insert(short_id, entries);
+            }
+        }
+        Ok(())
+    }
+
+    fn load_field_ids(&mut self, value: &Value) -> Result<()> {
+        let Some(field_ids) = value.as_object() else {
+            return Ok(());
+        };
+        self.field_ids.clear();
+        for (field, id) in field_ids {
+            let Some(id) = id.as_u64() else {
+                return Err(ERR_INVALID_FIELD_ID.to_string());
+            };
+            self.field_ids.insert(field.clone(), id as u32);
+        }
+        Ok(())
+    }
+}
+
+// -- Streaming deserialization of the version-2 index section ----------------
+//
+// The `index` section holds one `[term, {fieldId: {docId: freq}}]` entry per
+// vocabulary term and dominates the serialized payload. These seeds stream it
+// straight into the radix tree with no intermediate value tree, replicating
+// the value-tree loader observably: identical error messages, and identical
+// tolerance for weird-but-valid inputs (non-object field postings skip the
+// field, non-integer frequencies load as 0, duplicate keys keep the last
+// occurrence). Every type mismatch raises one of the `ERR_*` messages, so any
+// error surfacing from this section is ours; `strip_error_position` removes
+// the position suffix serde_json appends.
+
+fn strip_error_position(error: serde_json::Error) -> String {
+    let text = error.to_string();
+    match text.find(" at line ") {
+        Some(position) => text[..position].to_string(),
+        None => text,
+    }
+}
+
+struct IndexSectionSeed<'e> {
+    index: &'e mut RadixTree<FieldTermData>,
+}
+
+impl<'de> DeserializeSeed<'de> for IndexSectionSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<(), D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de> Visitor<'de> for IndexSectionSeed<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a serialized index array")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<(), A::Error> {
+        while seq
+            .next_element_seed(EntrySeed { index: self.index })?
+            .is_some()
+        {}
+        Ok(())
+    }
+}
+
+/// One `[term, fieldsData, ...ignored]` entry. Anything that is not an array
+/// of a string and an object is an invalid index entry.
+struct EntrySeed<'e> {
+    index: &'e mut RadixTree<FieldTermData>,
+}
+
+impl<'de> DeserializeSeed<'de> for EntrySeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for EntrySeed<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an index entry")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<(), A::Error> {
+        let Some(term) = seq.next_element_seed(TermSeed)? else {
+            return Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY));
+        };
+        let fields = FieldsSeed {
+            index: self.index,
+            term: &term,
+        };
+        if seq.next_element_seed(fields)?.is_none() {
+            return Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY));
+        }
+        // Extra elements beyond the pair are ignored, like `pair.get(0..2)`.
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_map<A: MapAccess<'de>>(self, _: A) -> std::result::Result<(), A::Error> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+}
+
+/// The term of an index entry; any non-string is an invalid index entry.
+struct TermSeed;
+
+impl<'de> DeserializeSeed<'de> for TermSeed {
+    type Value = String;
+
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<String, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for TermSeed {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an index term")
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<String, E> {
+        Ok(text.to_string())
+    }
+    fn visit_string<E: de::Error>(self, text: String) -> std::result::Result<String, E> {
+        Ok(text)
+    }
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<String, E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<String, E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<String, E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<String, E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<String, E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> std::result::Result<String, A::Error> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_map<A: MapAccess<'de>>(self, _: A) -> std::result::Result<String, A::Error> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+}
+
+/// The `{fieldId: postings}` object of an entry; inserts the assembled
+/// `FieldTermData` into the radix tree. A non-object is an invalid entry.
+struct FieldsSeed<'e> {
+    index: &'e mut RadixTree<FieldTermData>,
+    term: &'e str,
+}
+
+impl<'de> DeserializeSeed<'de> for FieldsSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for FieldsSeed<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an index entry field object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<(), A::Error> {
+        let mut data_map = FieldTermData::default();
+        while let Some(key) = map.next_key::<Cow<str>>()? {
+            let field_id: u32 = key
+                .parse()
+                .map_err(|_| de::Error::custom(ERR_INVALID_FIELD_ID))?;
+            // A non-object posting value skips the field, like `as_object`.
+            if let Some(doc_freqs) = map.next_value_seed(PostingsSeed)? {
+                data_map.insert(field_id, doc_freqs);
+            }
+        }
+        self.index.insert(self.term, data_map);
+        Ok(())
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<(), E> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> std::result::Result<(), A::Error> {
+        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+    }
+}
+
+/// A `{docId: freq}` posting object. Non-objects yield `None` (the caller
+/// skips the field); non-integer frequencies load as 0, like `as_u64`.
+struct PostingsSeed;
+
+impl<'de> DeserializeSeed<'de> for PostingsSeed {
+    type Value = Option<DocFreqs>;
+
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<Option<DocFreqs>, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for PostingsSeed {
+    type Value = Option<DocFreqs>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a posting object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<Option<DocFreqs>, A::Error> {
+        // Collected then built in one pass: posting lists can span thousands
+        // of documents, where sequential `VecMap::insert` is quadratic.
+        let mut pairs = Vec::with_capacity(map.size_hint().unwrap_or(0));
+        while let Some(key) = map.next_key::<Cow<str>>()? {
+            let doc_id = parse_short_id(&key).map_err(de::Error::custom)?;
+            let freq = map.next_value_seed(LenientFreqSeed)?;
+            pairs.push((doc_id, freq));
+        }
+        Ok(Some(DocFreqs::from_pairs_last_wins(pairs)))
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<Option<DocFreqs>, E> {
+        Ok(None)
+    }
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<Option<DocFreqs>, E> {
+        Ok(None)
+    }
+    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<Option<DocFreqs>, E> {
+        Ok(None)
+    }
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<Option<DocFreqs>, E> {
+        Ok(None)
+    }
+    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<Option<DocFreqs>, E> {
+        Ok(None)
+    }
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<Option<DocFreqs>, E> {
+        Ok(None)
+    }
+    fn visit_seq<A: SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<Option<DocFreqs>, A::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(None)
+    }
+}
+
+/// A term frequency with `Value::as_u64` semantics: integers are truncated
+/// to u32 exactly like the value-tree loader's `as u32` cast; floats,
+/// strings, and other types load as 0.
+struct LenientFreqSeed;
+
+impl<'de> DeserializeSeed<'de> for LenientFreqSeed {
+    type Value = u32;
+
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<u32, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for LenientFreqSeed {
+    type Value = u32;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a term frequency")
+    }
+
+    fn visit_u64<E: de::Error>(self, freq: u64) -> std::result::Result<u32, E> {
+        Ok(freq as u32)
+    }
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<u32, E> {
+        Ok(0)
+    }
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<u32, E> {
+        Ok(0)
+    }
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<u32, E> {
+        Ok(0)
+    }
+    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<u32, E> {
+        Ok(0)
+    }
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<u32, E> {
+        Ok(0)
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<u32, A::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(0)
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<u32, A::Error> {
+        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+        Ok(0)
+    }
 }
 
 fn parse_short_id(text: &str) -> Result<u32> {
     text.parse()
-        .map_err(|_| "MiniSearch: invalid document ID in serialized index".to_string())
+        .map_err(|_| ERR_INVALID_DOCUMENT_ID.to_string())
 }
 
 /// Stable sort by descending score, matching JavaScript's stable `sort`.
