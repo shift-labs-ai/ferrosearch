@@ -10,6 +10,11 @@
 //! Lookups scan from the back: documents are indexed one at a time, so the
 //! entry being updated is almost always the most recently appended one.
 
+use std::collections::hash_map::Entry;
+use std::hash::Hash;
+
+use rustc_hash::FxHashMap;
+
 pub struct VecMap<K, V> {
     entries: Vec<(K, V)>,
 }
@@ -76,6 +81,29 @@ impl<K: Copy + Eq, V> VecMap<K, V> {
     }
 }
 
+impl<K: Copy + Eq + Hash, V> VecMap<K, V> {
+    /// Builds a map from a pair sequence in one pass, with the exact
+    /// semantics of repeated `insert`: a duplicate key keeps its first
+    /// position and takes its last value. Sequential `insert` is O(n²) on a
+    /// long sequence of distinct keys — the shape of a wide posting list in
+    /// a serialized index — because each miss scans the whole vector.
+    pub fn from_pairs_last_wins(pairs: impl IntoIterator<Item = (K, V)>) -> Self {
+        let pairs = pairs.into_iter();
+        let mut entries: Vec<(K, V)> = Vec::with_capacity(pairs.size_hint().0);
+        let mut positions: FxHashMap<K, usize> = FxHashMap::default();
+        for (key, value) in pairs {
+            match positions.entry(key) {
+                Entry::Occupied(entry) => entries[*entry.get()].1 = value,
+                Entry::Vacant(entry) => {
+                    entry.insert(entries.len());
+                    entries.push((key, value));
+                }
+            }
+        }
+        VecMap { entries }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +127,21 @@ mod tests {
         let order: Vec<u32> = map.iter().map(|&(key, _)| key).collect();
         assert_eq!(order, vec![3, 2], "removal preserves order");
         assert!(!map.is_empty());
+    }
+
+    #[test]
+    fn from_pairs_matches_sequential_insert() {
+        let pairs = [(3u32, 1u32), (1, 2), (3, 5), (2, 10), (1, 7)];
+
+        let mut sequential: VecMap<u32, u32> = VecMap::default();
+        for &(key, value) in &pairs {
+            sequential.insert(key, value);
+        }
+        let bulk = VecMap::from_pairs_last_wins(pairs);
+
+        let seq: Vec<(u32, u32)> = sequential.iter().copied().collect();
+        let blk: Vec<(u32, u32)> = bulk.iter().copied().collect();
+        assert_eq!(blk, seq, "first position, last value");
+        assert_eq!(blk, vec![(3, 5), (1, 7), (2, 10)]);
     }
 }

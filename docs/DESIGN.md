@@ -161,6 +161,18 @@ Crossing the native boundary dominates performance. Strategy:
 - Bulk data crosses as JSON strings. Native `serde_json` parsing/writing
   beats per-object binding conversion — ~4.5x for serialization, ~1.2x for
   bulk indexing.
+- Index loading crosses as one JSON string and avoids a second
+  materialization: the loader keeps a raw slice per top-level section
+  (`serde_json::value::RawValue`), parses the small document-keyed sections
+  as value trees, and streams the `index` section — one entry per vocabulary
+  term, the bulk of the payload — through `DeserializeSeed` visitors
+  directly into the radix tree. Posting lists are collected and built in
+  one pass (`VecMap::from_pairs_last_wins`), since sequential insertion is
+  quadratic on lists spanning thousands of documents. Compatibility
+  constrains the whole path: the visitors reproduce the value-tree loader's
+  error messages and its tolerance for weird-but-valid input, pinned by the
+  loader's characterization suite. The legacy version-1 format, with its
+  order-dependent `ds` fallbacks, stays on the value-tree path.
 - Bulk search cannot be won this way: a warm JIT builds thousands of
   monomorphic result objects faster than any serialize-transfer-parse cycle.
   The result cache memoizes `(query, options) → JSON` and only serves reads

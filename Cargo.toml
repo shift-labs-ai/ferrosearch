@@ -16,7 +16,7 @@ napi-derive = "2"
 regex = "1"
 rustc-hash = "2"
 serde = "1"
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 
 [build-dependencies]
 napi-build = "2"

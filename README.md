@@ -6,7 +6,7 @@ a native addon.
 ferrosearch provides exact, prefix, and fuzzy matching with BM25+ ranking,
 query combination trees, auto-suggestions, and a full document lifecycle. It
 is index- and API-compatible with MiniSearch 7: serialized indexes load in
-either library. A test suite of 12,000+ assertions verifies identical search
+either library. A test suite of 14,000+ assertions verifies identical search
 results, scores, result ordering, and error messages.
 
 - [API reference](docs/API.md)
@@ -241,7 +241,7 @@ Apple Silicon, with warmup. Reproduce with `bun run bench:compare` and
 | Benchmark | Relative to minisearch |
 | --- | --- |
 | Serialize index (`toJsonString`) | 5x |
-| Load serialized index | 2.2x |
+| Load serialized index | 2.8x |
 | Auto suggestion | 1.6x |
 | Indexing from a JSON string (`addAllJson`) | 1.3x |
 | Indexing from JavaScript objects | 1.15x |
@@ -261,6 +261,12 @@ large result sets therefore favor the JavaScript implementation. Indexing,
 serialization, loading, auto-suggestion, selective queries, and cold start
 favor ferrosearch.
 
+Index loading streams the serialized `index` section directly into the
+engine without building an intermediate value tree, and posting lists are
+assembled in one pass. The loading advantage grows with index size: on a
+12 MB knowledge-base index (5,000 long documents, ~15,000 terms), loading
+is 3.8x faster than the JavaScript implementation.
+
 ## Implementation guarantees
 
 - Insertion-ordered structures replicate JavaScript `Map` iteration order
@@ -271,11 +277,11 @@ favor ferrosearch.
 - ferrosearch replicates the incremental index cleanup that MiniSearch
   performs during search after `discard`, including its order-dependent
   scoring bookkeeping.
-- The test suite (63 tests, 12,000+ assertions) compares every feature
+- The test suite (90 tests, 14,000+ assertions) compares every feature
   against the minisearch package: search batteries across corpora (unicode,
   mixed-type fields, edge-case IDs), full index-state equality after every
-  lifecycle operation, error messages, and serialization round trips in both
-  directions.
+  lifecycle operation, error messages, deserialization of malformed and
+  weird-but-valid indexes, and serialization round trips in both directions.
 
 ## Development
 
