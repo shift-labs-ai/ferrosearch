@@ -1,6 +1,6 @@
 {
   "name": "@shift-labs/ferrosearch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible",
   "license": "MIT",
   "repository": "github:shift-labs-ai/ferrosearch",
@@ -40,12 +40,12 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@shift-labs/ferrosearch-darwin-arm64": "0.1.0",
-    "@shift-labs/ferrosearch-darwin-x64": "0.1.0",
-    "@shift-labs/ferrosearch-linux-x64-gnu": "0.1.0",
-    "@shift-labs/ferrosearch-linux-arm64-gnu": "0.1.0",
-    "@shift-labs/ferrosearch-linux-x64-musl": "0.1.0",
-    "@shift-labs/ferrosearch-linux-arm64-musl": "0.1.0"
+    "@shift-labs/ferrosearch-darwin-arm64": "0.1.1",
+    "@shift-labs/ferrosearch-darwin-x64": "0.1.1",
+    "@shift-labs/ferrosearch-linux-x64-gnu": "0.1.1",
+    "@shift-labs/ferrosearch-linux-arm64-gnu": "0.1.1",
+    "@shift-labs/ferrosearch-linux-x64-musl": "0.1.1",
+    "@shift-labs/ferrosearch-linux-arm64-musl": "0.1.1"
   },
   "scripts": {
     "artifacts": "napi artifacts",
