@@ -241,7 +241,7 @@ Apple Silicon, with warmup. Reproduce with `bun run bench:compare` and
 | Benchmark | Relative to minisearch |
 | --- | --- |
 | Serialize index (`toJsonString`) | 5x |
-| Load serialized index | 2.2x |
+| Load serialized index | 2.8x |
 | Auto suggestion | 1.6x |
 | Indexing from a JSON string (`addAllJson`) | 1.3x |
 | Indexing from JavaScript objects | 1.15x |
@@ -260,6 +260,12 @@ than a warm JIT search in the JavaScript implementation. Bulk queries with
 large result sets therefore favor the JavaScript implementation. Indexing,
 serialization, loading, auto-suggestion, selective queries, and cold start
 favor ferrosearch.
+
+Index loading streams the serialized `index` section directly into the
+engine without building an intermediate value tree, and posting lists are
+assembled in one pass. The loading advantage grows with index size: on a
+12 MB knowledge-base index (5,000 long documents, ~15,000 terms), loading
+is roughly 4x faster than the JavaScript implementation.
 
 ## Implementation guarantees
 
