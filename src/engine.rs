@@ -8,7 +8,9 @@
 //! behavior.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt;
+use std::result::Result as StdResult;
 use std::sync::OnceLock;
 
 use indexmap::IndexMap;
@@ -1348,18 +1350,17 @@ impl Engine {
         // section instead of materializing a value tree of the whole index.
         // The `index` section dominates the payload (one entry per term) and
         // is streamed directly into the radix tree below.
-        let sections: std::collections::HashMap<String, &RawValue> =
-            match serde_json::from_str(json_text) {
-                Ok(sections) => sections,
-                Err(_) => {
-                    // Distinguish malformed JSON from valid JSON of the wrong
-                    // shape; the latter is an index without a usable version.
-                    return match serde_json::from_str::<IgnoredAny>(json_text) {
-                        Ok(_) => Err(ERR_INCOMPATIBLE_VERSION.to_string()),
-                        Err(error) => Err(format!("MiniSearch: invalid JSON index: {error}")),
-                    };
-                }
-            };
+        let sections: HashMap<String, &RawValue> = match serde_json::from_str(json_text) {
+            Ok(sections) => sections,
+            Err(_) => {
+                // Distinguish malformed JSON from valid JSON of the wrong
+                // shape; the latter is an index without a usable version.
+                return match serde_json::from_str::<IgnoredAny>(json_text) {
+                    Ok(_) => Err(ERR_INCOMPATIBLE_VERSION.to_string()),
+                    Err(error) => Err(format!("MiniSearch: invalid JSON index: {error}")),
+                };
+            }
+        };
         let section = |name: &str| sections.get(name).map(|raw| raw.get());
         // Section slices were syntax-validated by the pass above, so parsing
         // one into a value tree cannot fail.
@@ -1561,6 +1562,52 @@ fn strip_error_position(error: serde_json::Error) -> String {
     }
 }
 
+/// Implements the scalar `visit_*` methods as invalid-index-entry errors.
+/// Each visitor then rejects or accepts the compound shapes (string,
+/// sequence, map) explicitly — that difference is the visitor's contract.
+macro_rules! scalars_are_invalid_entries {
+    () => {
+        fn visit_bool<E: de::Error>(self, _: bool) -> StdResult<Self::Value, E> {
+            Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+        }
+        fn visit_i64<E: de::Error>(self, _: i64) -> StdResult<Self::Value, E> {
+            Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+        }
+        fn visit_u64<E: de::Error>(self, _: u64) -> StdResult<Self::Value, E> {
+            Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+        }
+        fn visit_f64<E: de::Error>(self, _: f64) -> StdResult<Self::Value, E> {
+            Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+        }
+        fn visit_unit<E: de::Error>(self) -> StdResult<Self::Value, E> {
+            Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
+        }
+    };
+}
+
+/// Implements the scalar and string `visit_*` methods as a tolerated
+/// default. `visit_u64` stays explicit — it is the meaningful case for both
+/// tolerant visitors — as do sequences and maps, which must be consumed.
+macro_rules! tolerated_scalars {
+    ($default:expr) => {
+        fn visit_bool<E: de::Error>(self, _: bool) -> StdResult<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_i64<E: de::Error>(self, _: i64) -> StdResult<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_f64<E: de::Error>(self, _: f64) -> StdResult<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_str<E: de::Error>(self, _: &str) -> StdResult<Self::Value, E> {
+            Ok($default)
+        }
+        fn visit_unit<E: de::Error>(self) -> StdResult<Self::Value, E> {
+            Ok($default)
+        }
+    };
+}
+
 struct IndexSectionSeed<'e> {
     index: &'e mut RadixTree<FieldTermData>,
 }
@@ -1568,10 +1615,7 @@ struct IndexSectionSeed<'e> {
 impl<'de> DeserializeSeed<'de> for IndexSectionSeed<'_> {
     type Value = ();
 
-    fn deserialize<D: de::Deserializer<'de>>(
-        self,
-        deserializer: D,
-    ) -> std::result::Result<(), D::Error> {
+    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> StdResult<(), D::Error> {
         deserializer.deserialize_seq(self)
     }
 }
@@ -1583,7 +1627,7 @@ impl<'de> Visitor<'de> for IndexSectionSeed<'_> {
         formatter.write_str("a serialized index array")
     }
 
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<(), A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> StdResult<(), A::Error> {
         while seq
             .next_element_seed(EntrySeed { index: self.index })?
             .is_some()
@@ -1601,10 +1645,7 @@ struct EntrySeed<'e> {
 impl<'de> DeserializeSeed<'de> for EntrySeed<'_> {
     type Value = ();
 
-    fn deserialize<D: de::Deserializer<'de>>(
-        self,
-        deserializer: D,
-    ) -> std::result::Result<(), D::Error> {
+    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> StdResult<(), D::Error> {
         deserializer.deserialize_any(self)
     }
 }
@@ -1616,7 +1657,7 @@ impl<'de> Visitor<'de> for EntrySeed<'_> {
         formatter.write_str("an index entry")
     }
 
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<(), A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> StdResult<(), A::Error> {
         let Some(term) = seq.next_element_seed(TermSeed)? else {
             return Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY));
         };
@@ -1632,25 +1673,12 @@ impl<'de> Visitor<'de> for EntrySeed<'_> {
         Ok(())
     }
 
-    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<(), E> {
+    scalars_are_invalid_entries!();
+
+    fn visit_str<E: de::Error>(self, _: &str) -> StdResult<(), E> {
         Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
     }
-    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_unit<E: de::Error>(self) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_map<A: MapAccess<'de>>(self, _: A) -> std::result::Result<(), A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, _: A) -> StdResult<(), A::Error> {
         Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
     }
 }
@@ -1661,10 +1689,7 @@ struct TermSeed;
 impl<'de> DeserializeSeed<'de> for TermSeed {
     type Value = String;
 
-    fn deserialize<D: de::Deserializer<'de>>(
-        self,
-        deserializer: D,
-    ) -> std::result::Result<String, D::Error> {
+    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> StdResult<String, D::Error> {
         deserializer.deserialize_any(self)
     }
 }
@@ -1676,31 +1701,19 @@ impl<'de> Visitor<'de> for TermSeed {
         formatter.write_str("an index term")
     }
 
-    fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<String, E> {
+    fn visit_str<E: de::Error>(self, text: &str) -> StdResult<String, E> {
         Ok(text.to_string())
     }
-    fn visit_string<E: de::Error>(self, text: String) -> std::result::Result<String, E> {
+    fn visit_string<E: de::Error>(self, text: String) -> StdResult<String, E> {
         Ok(text)
     }
-    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<String, E> {
+
+    scalars_are_invalid_entries!();
+
+    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> StdResult<String, A::Error> {
         Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
     }
-    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<String, E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<String, E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<String, E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_unit<E: de::Error>(self) -> std::result::Result<String, E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> std::result::Result<String, A::Error> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_map<A: MapAccess<'de>>(self, _: A) -> std::result::Result<String, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, _: A) -> StdResult<String, A::Error> {
         Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
     }
 }
@@ -1715,10 +1728,7 @@ struct FieldsSeed<'e> {
 impl<'de> DeserializeSeed<'de> for FieldsSeed<'_> {
     type Value = ();
 
-    fn deserialize<D: de::Deserializer<'de>>(
-        self,
-        deserializer: D,
-    ) -> std::result::Result<(), D::Error> {
+    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> StdResult<(), D::Error> {
         deserializer.deserialize_any(self)
     }
 }
@@ -1730,7 +1740,7 @@ impl<'de> Visitor<'de> for FieldsSeed<'_> {
         formatter.write_str("an index entry field object")
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<(), A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> StdResult<(), A::Error> {
         let mut data_map = FieldTermData::default();
         while let Some(key) = map.next_key::<Cow<str>>()? {
             let field_id: u32 = key
@@ -1745,25 +1755,12 @@ impl<'de> Visitor<'de> for FieldsSeed<'_> {
         Ok(())
     }
 
-    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<(), E> {
+    scalars_are_invalid_entries!();
+
+    fn visit_str<E: de::Error>(self, _: &str) -> StdResult<(), E> {
         Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
     }
-    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_unit<E: de::Error>(self) -> std::result::Result<(), E> {
-        Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> std::result::Result<(), A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, _: A) -> StdResult<(), A::Error> {
         Err(de::Error::custom(ERR_INVALID_INDEX_ENTRY))
     }
 }
@@ -1778,7 +1775,7 @@ impl<'de> DeserializeSeed<'de> for PostingsSeed {
     fn deserialize<D: de::Deserializer<'de>>(
         self,
         deserializer: D,
-    ) -> std::result::Result<Option<DocFreqs>, D::Error> {
+    ) -> StdResult<Option<DocFreqs>, D::Error> {
         deserializer.deserialize_any(self)
     }
 }
@@ -1790,10 +1787,7 @@ impl<'de> Visitor<'de> for PostingsSeed {
         formatter.write_str("a posting object")
     }
 
-    fn visit_map<A: MapAccess<'de>>(
-        self,
-        mut map: A,
-    ) -> std::result::Result<Option<DocFreqs>, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> StdResult<Option<DocFreqs>, A::Error> {
         // Collected then built in one pass: posting lists can span thousands
         // of documents, where sequential `VecMap::insert` is quadratic.
         let mut pairs = Vec::with_capacity(map.size_hint().unwrap_or(0));
@@ -1805,28 +1799,12 @@ impl<'de> Visitor<'de> for PostingsSeed {
         Ok(Some(DocFreqs::from_pairs_last_wins(pairs)))
     }
 
-    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<Option<DocFreqs>, E> {
+    tolerated_scalars!(None);
+
+    fn visit_u64<E: de::Error>(self, _: u64) -> StdResult<Option<DocFreqs>, E> {
         Ok(None)
     }
-    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<Option<DocFreqs>, E> {
-        Ok(None)
-    }
-    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<Option<DocFreqs>, E> {
-        Ok(None)
-    }
-    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<Option<DocFreqs>, E> {
-        Ok(None)
-    }
-    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<Option<DocFreqs>, E> {
-        Ok(None)
-    }
-    fn visit_unit<E: de::Error>(self) -> std::result::Result<Option<DocFreqs>, E> {
-        Ok(None)
-    }
-    fn visit_seq<A: SeqAccess<'de>>(
-        self,
-        mut seq: A,
-    ) -> std::result::Result<Option<DocFreqs>, A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> StdResult<Option<DocFreqs>, A::Error> {
         while seq.next_element::<IgnoredAny>()?.is_some() {}
         Ok(None)
     }
@@ -1840,10 +1818,7 @@ struct LenientFreqSeed;
 impl<'de> DeserializeSeed<'de> for LenientFreqSeed {
     type Value = u32;
 
-    fn deserialize<D: de::Deserializer<'de>>(
-        self,
-        deserializer: D,
-    ) -> std::result::Result<u32, D::Error> {
+    fn deserialize<D: de::Deserializer<'de>>(self, deserializer: D) -> StdResult<u32, D::Error> {
         deserializer.deserialize_any(self)
     }
 }
@@ -1855,29 +1830,17 @@ impl<'de> Visitor<'de> for LenientFreqSeed {
         formatter.write_str("a term frequency")
     }
 
-    fn visit_u64<E: de::Error>(self, freq: u64) -> std::result::Result<u32, E> {
+    fn visit_u64<E: de::Error>(self, freq: u64) -> StdResult<u32, E> {
         Ok(freq as u32)
     }
-    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<u32, E> {
-        Ok(0)
-    }
-    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<u32, E> {
-        Ok(0)
-    }
-    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<u32, E> {
-        Ok(0)
-    }
-    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<u32, E> {
-        Ok(0)
-    }
-    fn visit_unit<E: de::Error>(self) -> std::result::Result<u32, E> {
-        Ok(0)
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<u32, A::Error> {
+
+    tolerated_scalars!(0);
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> StdResult<u32, A::Error> {
         while seq.next_element::<IgnoredAny>()?.is_some() {}
         Ok(0)
     }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<u32, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> StdResult<u32, A::Error> {
         while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
         Ok(0)
     }

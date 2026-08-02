@@ -10,6 +10,7 @@
 //! Lookups scan from the back: documents are indexed one at a time, so the
 //! entry being updated is almost always the most recently appended one.
 
+use std::collections::hash_map::Entry;
 use std::hash::Hash;
 
 use rustc_hash::FxHashMap;
@@ -92,10 +93,8 @@ impl<K: Copy + Eq + Hash, V> VecMap<K, V> {
         let mut positions: FxHashMap<K, usize> = FxHashMap::default();
         for (key, value) in pairs {
             match positions.entry(key) {
-                std::collections::hash_map::Entry::Occupied(entry) => {
-                    entries[*entry.get()].1 = value;
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
+                Entry::Occupied(entry) => entries[*entry.get()].1 = value,
+                Entry::Vacant(entry) => {
                     entry.insert(entries.len());
                     entries.push((key, value));
                 }
