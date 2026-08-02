@@ -1393,7 +1393,8 @@ impl Engine {
         engine.load_field_ids(&parse("fieldIds"))?;
 
         if let Some(raw_index) = section("index") {
-            // A non-array index section is skipped, like `as_array` before.
+            // A non-array index section is skipped, like the value-tree
+            // loader's `as_array`.
             if raw_index.trim_start().starts_with('[') {
                 let mut deserializer = serde_json::Deserializer::from_str(raw_index);
                 IndexSectionSeed {
@@ -1549,8 +1550,9 @@ impl Engine {
 // straight into the radix tree with no intermediate value tree, replicating
 // the value-tree loader observably: identical error messages, and identical
 // tolerance for weird-but-valid inputs (non-object field postings skip the
-// field, non-integer frequencies load as 0, duplicate keys keep the last
-// occurrence). Every type mismatch raises one of the `ERR_*` messages, so any
+// field, non-integer frequencies load as 0, and a duplicate key keeps its
+// first position with its last value, like `JSON.parse`). Every type
+// mismatch raises one of the `ERR_*` messages, so any
 // error surfacing from this section is ours; `strip_error_position` removes
 // the position suffix serde_json appends.
 

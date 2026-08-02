@@ -4,12 +4,13 @@ import JsMiniSearch from "minisearch";
 import { FerroSearch } from "../ferrosearch.js";
 
 /**
- * Characterization suite for `loadJson`, written before the streaming-loader
- * rewrite. It pins the exact observable contract of the current loader:
- * error messages and their precedence, tolerances for weird-but-valid JSON,
- * the legacy version-1 format, and round trips on a long-field corpus (the
- * napkin / knowledge-base document shape that motivated the rewrite).
- * The rewrite must keep every one of these green.
+ * The observable contract of `loadJson`: error messages and their
+ * precedence, tolerances for weird-but-valid JSON, the legacy version-1
+ * format, and round trips on a long-field corpus (the knowledge-base
+ * document shape that motivated the streaming loader). Both load paths —
+ * the streaming version-2 loader and the value-tree version-1 fallback —
+ * must satisfy this suite; it was captured against the value-tree loader
+ * before the streaming rewrite, so green here means the two are equivalent.
  */
 
 const options = {

@@ -6,7 +6,7 @@ a native addon.
 ferrosearch provides exact, prefix, and fuzzy matching with BM25+ ranking,
 query combination trees, auto-suggestions, and a full document lifecycle. It
 is index- and API-compatible with MiniSearch 7: serialized indexes load in
-either library. A test suite of 12,000+ assertions verifies identical search
+either library. A test suite of 14,000+ assertions verifies identical search
 results, scores, result ordering, and error messages.
 
 - [API reference](docs/API.md)
@@ -265,7 +265,7 @@ Index loading streams the serialized `index` section directly into the
 engine without building an intermediate value tree, and posting lists are
 assembled in one pass. The loading advantage grows with index size: on a
 12 MB knowledge-base index (5,000 long documents, ~15,000 terms), loading
-is roughly 4x faster than the JavaScript implementation.
+is 3.8x faster than the JavaScript implementation.
 
 ## Implementation guarantees
 
@@ -277,11 +277,11 @@ is roughly 4x faster than the JavaScript implementation.
 - ferrosearch replicates the incremental index cleanup that MiniSearch
   performs during search after `discard`, including its order-dependent
   scoring bookkeeping.
-- The test suite (63 tests, 12,000+ assertions) compares every feature
+- The test suite (90 tests, 14,000+ assertions) compares every feature
   against the minisearch package: search batteries across corpora (unicode,
   mixed-type fields, edge-case IDs), full index-state equality after every
-  lifecycle operation, error messages, and serialization round trips in both
-  directions.
+  lifecycle operation, error messages, deserialization of malformed and
+  weird-but-valid indexes, and serialization round trips in both directions.
 
 ## Development
 
