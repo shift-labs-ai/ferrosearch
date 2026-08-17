@@ -1,6 +1,6 @@
 [package]
 name = "ferrosearch"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible"

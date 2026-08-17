@@ -27,7 +27,7 @@ results, scores, result ordering, and error messages.
 ## Installation
 
 ```bash
-bun add @shift-labs/ferrosearch
+bun add @shiftlabs/ferrosearch
 ```
 
 Prebuilt binaries cover macOS (arm64, x64) and Linux (x64 and arm64, glibc
@@ -36,7 +36,7 @@ platforms, build from source with Rust installed: `bun install && bun run
 build`.
 
 ```javascript
-import { FerroSearch } from "@shift-labs/ferrosearch";
+import { FerroSearch } from "@shiftlabs/ferrosearch";
 ```
 
 For drop-in migration from MiniSearch, the same class is also exported under

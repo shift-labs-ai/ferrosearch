@@ -1,3 +1,3 @@
-# `@shift-labs/ferrosearch-darwin-x64`
+# `@shiftlabs/ferrosearch-darwin-x64`
 
-This is the **x86_64-apple-darwin** binary for `@shift-labs/ferrosearch`
+This is the **x86_64-apple-darwin** binary for `@shiftlabs/ferrosearch`

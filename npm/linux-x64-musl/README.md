@@ -1,3 +1,3 @@
-# `@shift-labs/ferrosearch-linux-x64-musl`
+# `@shiftlabs/ferrosearch-linux-x64-musl`
 
-This is the **x86_64-unknown-linux-musl** binary for `@shift-labs/ferrosearch`
+This is the **x86_64-unknown-linux-musl** binary for `@shiftlabs/ferrosearch`
