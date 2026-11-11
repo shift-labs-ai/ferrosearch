@@ -41,6 +41,10 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             musl: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -59,6 +63,7 @@ jobs:
           version: 0.13.0
       - run: bun install --frozen-lockfile
       - run: bunx napi build --release --strip --platform --target ${{ matrix.target }} ${{ matrix.musl && '--zig' || '' }}
+        shell: bash
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.target }}

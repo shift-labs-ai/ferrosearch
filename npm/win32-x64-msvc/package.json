@@ -1,0 +1,29 @@
+{
+  "name": "@shiftlabs/ferrosearch-win32-x64-msvc",
+  "version": "0.1.3",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "ferrosearch.win32-x64-msvc.node",
+  "files": [
+    "ferrosearch.win32-x64-msvc.node"
+  ],
+  "description": "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible",
+  "keywords": [
+    "search",
+    "full-text",
+    "fuzzy",
+    "bm25",
+    "native",
+    "rust",
+    "minisearch"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": "github:shift-labs-ai/ferrosearch"
+}
