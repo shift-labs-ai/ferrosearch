@@ -20,13 +20,16 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run verify
 
-  # The Windows binding: built and run against the full test suite, so a
-  # release never publishes a Windows package nothing has loaded.
+  # The Windows bindings: x64 built and run against the full test suite,
+  # so a release never publishes a Windows package nothing has loaded;
+  # arm64 cross-built, so its release build is not the first one.
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
@@ -34,3 +37,4 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx napi build --release --strip --platform
       - run: bun test
+      - run: bunx napi build --release --strip --platform --target aarch64-pc-windows-msvc
