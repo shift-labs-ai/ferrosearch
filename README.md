@@ -30,10 +30,10 @@ results, scores, result ordering, and error messages.
 bun add @shiftlabs/ferrosearch
 ```
 
-Prebuilt binaries cover macOS (arm64, x64) and Linux (x64 and arm64, glibc
-and musl). Installation selects the matching binary automatically. On other
-platforms, build from source with Rust installed: `bun install && bun run
-build`.
+Prebuilt binaries cover macOS (arm64, x64), Linux (x64 and arm64, glibc
+and musl) and Windows (x64, arm64). Installation selects the matching
+binary automatically. On other platforms, build from source with Rust
+installed: `bun install && bun run build`.
 
 ```javascript
 import { FerroSearch } from "@shiftlabs/ferrosearch";

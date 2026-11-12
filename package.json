@@ -1,6 +1,6 @@
 {
   "name": "@shiftlabs/ferrosearch",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "In-memory full-text search engine for Bun and Node, implemented in Rust; MiniSearch-compatible",
   "license": "MIT",
   "repository": "github:shift-labs-ai/ferrosearch",
@@ -32,7 +32,9 @@
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
         "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl"
+        "aarch64-unknown-linux-musl",
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc"
       ]
     }
   },
@@ -40,12 +42,14 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@shiftlabs/ferrosearch-darwin-arm64": "0.1.2",
-    "@shiftlabs/ferrosearch-darwin-x64": "0.1.2",
-    "@shiftlabs/ferrosearch-linux-x64-gnu": "0.1.2",
-    "@shiftlabs/ferrosearch-linux-arm64-gnu": "0.1.2",
-    "@shiftlabs/ferrosearch-linux-x64-musl": "0.1.2",
-    "@shiftlabs/ferrosearch-linux-arm64-musl": "0.1.2"
+    "@shiftlabs/ferrosearch-darwin-arm64": "0.1.3",
+    "@shiftlabs/ferrosearch-darwin-x64": "0.1.3",
+    "@shiftlabs/ferrosearch-linux-x64-gnu": "0.1.3",
+    "@shiftlabs/ferrosearch-linux-arm64-gnu": "0.1.3",
+    "@shiftlabs/ferrosearch-linux-x64-musl": "0.1.3",
+    "@shiftlabs/ferrosearch-linux-arm64-musl": "0.1.3",
+    "@shiftlabs/ferrosearch-win32-x64-msvc": "0.1.3",
+    "@shiftlabs/ferrosearch-win32-arm64-msvc": "0.1.3"
   },
   "scripts": {
     "artifacts": "napi artifacts",

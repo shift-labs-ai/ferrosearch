@@ -19,3 +19,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: bun install --frozen-lockfile
       - run: bun run verify
+
+  # The Windows bindings: x64 built and run against the full test suite,
+  # so a release never publishes a Windows package nothing has loaded;
+  # arm64 cross-built, so its release build is not the first one.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: Swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx napi build --release --strip --platform
+      - run: bun test
+      # The tested x64 binding, for consumers that build ahead of a
+      # release (Vex Desktop's Windows build).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-x86_64-pc-windows-msvc
+          path: ferrosearch.win32-x64-msvc.node
+          if-no-files-found: error
+      - run: bunx napi build --release --strip --platform --target aarch64-pc-windows-msvc
