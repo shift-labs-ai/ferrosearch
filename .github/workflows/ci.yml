@@ -37,4 +37,11 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx napi build --release --strip --platform
       - run: bun test
+      # The tested x64 binding, for consumers that build ahead of a
+      # release (Vex Desktop's Windows build).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-x86_64-pc-windows-msvc
+          path: ferrosearch.win32-x64-msvc.node
+          if-no-files-found: error
       - run: bunx napi build --release --strip --platform --target aarch64-pc-windows-msvc
